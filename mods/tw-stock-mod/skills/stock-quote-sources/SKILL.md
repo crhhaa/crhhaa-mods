@@ -23,9 +23,10 @@ section.
 
 ## Steps per route
 
-**Yahoo (default).** Nothing to do. To be explicit, set
-`"twSources": ["yahoo"]` in `<project>/.claude/stock-band.json`. Footer tag:
-`Yahoo 即時` (US) / `Yahoo 延遲` (Taiwan, ~20 min behind).
+**證交所 MIS + Yahoo (default).** Nothing to do - Taiwan reads MIS
+(`證交所 延遲`, seconds behind - not tick-by-tick; that needs 永豐) and falls back to Yahoo (`Yahoo 延遲`, ~20 min behind) on a
+tick MIS has nothing for; the US reads Yahoo (`Yahoo 即時`). To force Yahoo
+only, set `"twSources": ["yahoo"]` in `<project>/.claude/stock-band.json`.
 
 **永豐 Shioaji, managed by the band.** Put `SINOBON_API_KEY`/`SINOBON_SECRET_KEY`
 in an env file outside the repo, and set `~/.claude/stock-band.json` (NOT the

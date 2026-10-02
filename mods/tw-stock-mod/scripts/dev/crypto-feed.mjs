@@ -158,7 +158,7 @@ async function boot(responses) {
   await new Promise(r => setTimeout(r, 200))
 
   const probe = async () => {
-    const tree = await handlers.get('ui.render')($, { props: {}, surface: 'terminal', viewport: { columns: 100 } }, next)
+    const tree = await handlers.get('ui.render')($, { props: {}, surface: 'terminal', viewport: { columns: 140 } }, next)
     return findClient(tree)?.props?.props
   }
 

@@ -134,6 +134,8 @@ run_check "file-bars"      node "$SCRIPT_DIR/file-bars.mjs"   "$OUT/register.js"
 run_check "crypto-feed"    node "$SCRIPT_DIR/crypto-feed.mjs" "$OUT/register.js"
 run_check "crypto-sort"    node "$SCRIPT_DIR/crypto-sort.mjs" "$OUT/register.js"
 run_check "market-select"  node "$SCRIPT_DIR/market-select.mjs" "$OUT/register.js"
+run_check "volume-cols"    node "$SCRIPT_DIR/volume-cols.mjs" "$OUT/register.js" "$OUT/board.js"
+run_check "futures"        node "$SCRIPT_DIR/futures.mjs" "$OUT/register.js"
 run_check "engine-rules"   bash "$SCRIPT_DIR/check-engine-rules.sh"
 run_check "check-personal" bash "$SCRIPT_DIR/check-personal.sh"
 

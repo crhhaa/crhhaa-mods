@@ -1,142 +1,305 @@
-# darrelltw-mods
+# crhhaa-mods
 
-Claude Code mods I build for myself and then clean up enough to share. They all
-draw into the strip above the prompt (`AbovePrompt`), they all run on
-**function hooks** (early access), and none of them spend model tokens —
-nothing here calls `$.model.*` or touches your prompt.
+在 Claude Code 輸入框上方放一條**股票看板**：台股時段顯示台股、美股時段顯示美股，紅漲綠跌（台股）／綠漲紅跌（美股），價格自動更新（台股延遲數秒到 30 秒左右，詳見[報價來源](#4-報價來源)），不花任何模型 token。
 
-## What's in here
+> 本專案 fork 自 [darrell-tw/darrelltw-mods](https://github.com/darrell-tw/darrelltw-mods)（MIT 授權），原作者 Darrell Wang。
+> 這個版本多了：雙欄也顯示**漲跌金額（變更$）**與**成交量（量）**、台股預設走**證交所 MIS 報價**（不用帳號，延遲只有幾秒到 30 秒，Yahoo 則是 20 分鐘）。
 
-| mod | what it does |
+```
+ 台股 ▾  ☀ 盤中 09:00-13:30                                     [趨勢圖] [收起 30分]
+ 代號                                             價格      變更$   ↓變更%        量
+ ───────────────────────────────────────────────────────────────────────────────────
+ 2317    鴻海                                   212.50      +4.50 ▲ +2.16%    48,213
+ 2882    國泰金                                  71.30      +0.70 ▲ +0.99%    15,872
+ 2412    中華電                                 131.50      +0.50 ▲ +0.38%     6,120
+ 1301    台塑                                    45.85      -0.55 ▼ -1.19%    11,207
+ 2603    長榮                                   188.00      -2.50 ▼ -1.31%     9,342
+ 加權指數 46,051.32 ▲ +188.80 +0.41% 13:12:25 ● 證交所 延遲 · v0.13.4-crhhaa.4 · crhhaa
+```
+
+（示意圖，數字為虛構）
+---
+
+## 1. 安裝
+
+### 需求
+
+- **Claude Code 2.1.269 以上**（`claude --version` 查）
+- **一般終端機**：macOS 的 iTerm2、Terminal.app 都可以。`claude -p`、桌面版、手機版**不會顯示**
+- 不用帳號、不用 API 金鑰
+
+### 步驟
+
+**① 打開 function hooks**：編輯 `~/.claude/settings.json`，加入下面這段（如果已經有 `env`，就把這一行合併進去）：
+
+```json
+{ "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }
+```
+
+**② 安裝**：在終端機執行：
+
+```sh
+claude plugin marketplace add crhhaa/crhhaa-mods
+claude plugin install tw-stock-mod@crhhaa-mods --scope user
+```
+
+**③ 完全關掉 Claude Code 再重開**，輸入框上方就會出現看板。
+
+> 沒設自選股之前，會先顯示內建的台股／美股各 20 檔。
+
+---
+
+## 2. 設定自選股
+
+有兩種方法，選一個就好。
+
+### 方法 A：讓 Claude 幫你設（最簡單）
+
+在 Claude Code 裡輸入：
+
+```
+/tw-stock-mod:stock-band-setup
+```
+
+告訴它你要哪些股票，它會先**逐檔確認代號查得到報價**、自動判斷上市或上櫃，再幫你寫好設定檔。
+
+### 方法 B：自己寫設定檔
+
+建立（或編輯）`~/.claude/stock-band.json`：
+
+```json
+{
+  "tw": [
+    { "code": "2330" },
+    { "code": "2454" },
+    { "code": "0050" },
+    { "code": "6488", "ex": "otc" }
+  ],
+  "us": [
+    { "code": "NVDA", "name": "NVIDIA" },
+    { "code": "AAPL", "name": "Apple" },
+    { "code": "QQQ",  "name": "Invesco QQQ" }
+  ]
+}
+```
+
+存檔後幾秒內就會更新，沒變的話在 Claude Code 裡執行 `/reload-plugins`。
+
+#### 欄位說明
+
+| 欄位 | 必填 | 說明 |
+| --- | --- | --- |
+| `code` | ✅ | 股票代號。台股寫數字（`2330`），美股寫英文代號（`NVDA`） |
+| `name` | | 顯示的名稱。**台股可以不寫**，會自動用證交所回傳的中文名；美股建議寫，不寫就只顯示代號 |
+| `ex` | 上櫃必填 | **上櫃股票一定要加 `"ex": "otc"`**（例如 6488 環球晶），不然會一直沒有價格。上市股票不用寫 |
+
+#### 小提醒
+
+- **每個市場最多 20 檔**，超過的會被忽略
+- `tw` 和 `us` 是分開的兩份清單，**只寫其中一份也可以**，沒寫的那份會用內建清單
+- 不知道某檔是上市還是上櫃？用方法 A，Claude 會幫你查
+- 還有一份加密貨幣清單（`"crypto": [{ "code": "BTC" }, …]`，報價來自 Pionex），用法一樣
+
+---
+
+## 3. 看板怎麼用
+
+### 版面會隨終端機寬度改變
+
+```
+終端機寬度        顯示方式
+──────────────────────────────────────────────────────────────
+≥ 119 欄         雙欄：一頁 10 檔，每檔都有 價格／變更$／變更%／量
+< 119 欄         單欄：一頁 5 檔，超過的每 10 秒自動翻頁
+很窄的時候        單欄，先拿掉「量」，再拿掉名稱
+```
+
+在終端機輸入 `tput cols` 可以查目前寬度。
+
+### 欄位
+
+| 欄位 | 意思 |
 | --- | --- |
-| [`tw-stock-mod`](mods/tw-stock-mod/README.md) | 台股／美股看板。台股時段顯示台股清單（紅漲綠跌），美股時段顯示美股清單（綠漲紅跌），券商風格表格＋Solari 翻牌指數列＋損益模式。台美各 20 檔，報價預設走 Yahoo（免金鑰），永豐 Shioaji 可選，照個人偏好順序（`~/.claude/stock-band.json`） |
+| 價格 | 最新成交價 |
+| 變更$ | 跟昨天收盤比漲跌多少錢 |
+| 變更% | 漲跌幅，預設照這欄排序（`↓` 代表正在用它排序） |
+| 量 | 今天累積成交量。台股單位是**張**；美股是**股**，用 K／M 縮寫（35.0M = 3,500 萬股）。加密貨幣顯示的是 24 小時成交額（標題寫「額」） |
 
-More will land here. The marketplace is named after me rather than after what
-is in it, so adding an unrelated mod later does not make the name a lie.
+### 按鈕
 
-## Install
+- **`台股 ▾` / `美股 ▾`**：切換市場。平常會自動依時間切換：台股開盤顯示台股，美股開盤顯示美股
+- **`翻頁`**：自選股超過一頁時才會出現
+- **`趨勢圖`**：把表格換成單一股票的 5 分 K 線，用 `◀ 上一檔` / `下一檔 ▶` 切換股票，`回清單` 回到表格
+- **`收起 30分`**：暫時把看板收起來 30 分鐘
 
-1. Turn function hooks on in `~/.claude/settings.json` (merge the `env` key if
-   you already have one):
+### footer 右下角
 
-   ```json
-   { "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }
-   ```
+```
+13:12:25 ● 證交所 延遲 · v0.13.4-crhhaa.4 · crhhaa
+   │     │      │              │
+   │     │      │              └─ 版本號：確認自己跑的是哪一版
+   │     │      └─ 報價來源：證交所 延遲／Yahoo 延遲／Yahoo 即時（美股），見下一節
+   │     └─ 每收到一次新報價會閃一下
+   └─ 交易所時間（收盤後顯示「收盤 13:30」）
+```
 
-2. Add this marketplace, then install the mod you want from inside the
-   project you want it in. `--scope local` keeps the mod in that one project
-   instead of every project on the machine:
+如果 footer 寫的是 **`示範資料（未接 API）`**，代表抓不到報價，畫面上的數字是假的。
 
-   ```sh
-   claude plugin marketplace add darrell-tw/darrelltw-mods
-   cd /path/to/your/project
-   claude plugin install tw-stock-mod@darrelltw-mods --scope local
-   ```
+### footer 左下角的指數跑馬燈
 
-   Drop `--scope local` only if you want the band above the prompt everywhere.
+每張卡片顯示 指數值、漲跌點數、漲跌幅，例如 `TAIEX 48,407.44 ▲ +53.95 +0.11%`。
 
-3. Restart Claude Code.
+台股預設會輪流翻 4 個指數（每個停 5 秒）：TAIEX 加權、SEMI 半導體、FINANCE 金融、SHIPPING 航運。想改成自己要的，在 `~/.claude/stock-band.json` 加 `twIndices`：
 
-Each mod's own README covers its config file, and the stock mod ships a
-`/tw-stock-mod:stock-band-setup` command that writes one for you.
+```json
+{
+  "twIndices": [
+    { "code": "t00", "name": "TAIEX" },
+    { "code": "TXF", "ex": "futures" }
+  ]
+}
+```
 
-To remove:
+上面這個設定會在 加權指數 和 台指期 之間輪流翻。只放一個就固定顯示、不翻動。常用代號：
+
+| code | 指數 | 備註 |
+| --- | --- | --- |
+| `t00` | 加權指數 | |
+| `t24` | 半導體類 | |
+| `t17` | 金融保險類 | |
+| `t15` | 航運類 | |
+| `o00` | 櫃買指數 | 要加 `"ex": "otc"` |
+| `TXF` | 台指期（近月） | 要加 `"ex": "futures"`，資料來自期交所 |
+
+**台指期**有夜盤（15:00～隔天 05:00），所以台股收盤後它還會繼續跳動，晚上可以看出市場對隔天的預期。交易時段內跟著看板一起更新；不在交易時段時，每 10 分鐘確認一次收盤價。台指期固定排在最後一張。
+
+`name` 請用英文，翻牌動畫沒辦法翻中文字。
+
+---
+
+## 4. 報價來源
+
+| 市場 | 來源 | footer 顯示 | 大約落後多久 |
+| --- | --- | --- | --- |
+| 台股 | 證交所 MIS（預設） | `證交所 延遲` | **幾秒到 30 秒左右** |
+| 台股 | Yahoo（MIS 沒回應時自動改用） | `Yahoo 延遲` | 約 20 分鐘 |
+| 美股 | Yahoo | `Yahoo 即時` | 幾秒到 30 秒左右 |
+| 加密貨幣 | Pionex | `Pionex 即時` | 幾秒到 30 秒左右 |
+
+### 為什麼證交所也不是即時？
+
+```
+證交所撮合 ──▶ MIS 網頁資料 ──▶ 看板去抓 ──▶ 畫面
+              約每 5 秒更新      每 30 秒抓一次
+```
+
+證交所的 MIS 是公開的看盤網頁資料，本身大約每 5 秒更新一次；看板再每 30 秒去抓一次，**所以畫面上的價格會落後幾秒到 30 秒左右**（footer 的 `· 10s` 是距離下次抓取的倒數）。這對「瞄一眼看漲跌」夠用，但**不適合拿來搶短線進出**。
+
+抓取間隔不能再調短：證交所對太頻繁的請求會封鎖 IP，原作者把下限設在 15 秒就是為了避免這個問題。
+
+### 想要真正的即時（逐筆）：接券商 API
+
+要拿到真正即時的報價，要透過券商的 API。這個看板內建支援兩家：
+
+| 券商 | 系統 | footer 顯示 |
+| --- | --- | --- |
+| 永豐金證券（Shioaji） | macOS／Linux | `永豐 即時` |
+| 群益證券（Capital） | Windows | `群益 即時` |
+
+以 Mac 常用的永豐為例，你需要：
+
+1. **永豐金證券帳戶**
+2. 在永豐官網**申請開通 API**，取得 API Key 和 Secret Key
+3. 到永豐的**簽署中心通過「Python API 測試」**（沒通過的話，登入時會出現 HTTP 406）
+4. 電腦上要有 **Python 3.12 或 3.13**，並安裝 `shioaji` 套件
+
+都準備好之後，在 Claude Code 裡說「**我要接永豐**」，Claude 會一步步帶你設定（金鑰放在哪裡、怎麼測試、怎麼寫進設定檔）。詳細技術說明見 [quote-sources.md](mods/tw-stock-mod/references/quote-sources.md)。
+
+> 註：看板預設每 10 秒向永豐取一次快照（可以調整），所以畫面上不會每一筆成交都跳動，但資料本身是即時的，不會像 MIS 那樣多一層網頁更新的延遲。
+
+--- | --- | --- |
+| 台股 | 證交所 MIS（即時）。MIS 沒回應時自動改用 Yahoo（延遲約 20 分鐘），footer 會顯示 `Yahoo 延遲` | 約 30 秒 |
+| 美股 | Yahoo | 約 30 秒 |
+| 加密貨幣 | Pionex | 約 30 秒 |
+
+想要逐筆即時，可以接永豐（Shioaji，macOS／Linux）或群益（Windows）的券商 API，需要有該券商帳戶。詳見 [tw-stock-mod 的英文文件](mods/tw-stock-mod/README.md#the-live-feed)，或在 Claude Code 裡問「怎麼接永豐」。
+
+---
+
+## 5. 庫存損益（選用）
+
+在 `~/.claude/stock-band.json` 加一個 `holdings` 區塊，市場按鈕的循環就會多出「台股庫存」這一站，顯示每檔的損益：
+
+```json
+{
+  "tw": [ { "code": "2330" } ],
+  "holdings": {
+    "tw": [ { "code": "2330", "name": "台積電", "qty": 1000, "cost": 1800 } ],
+    "us": []
+  }
+}
+```
+
+`qty` 是**股數**（1 張 = 1000 股），`cost` 是每股成本。
+
+---
+
+## 6. 更新與移除
+
+**更新到最新版：**
 
 ```sh
-claude plugin uninstall tw-stock-mod@darrelltw-mods --scope local
-claude plugin marketplace remove darrelltw-mods
+claude plugin marketplace update crhhaa-mods
+claude plugin update tw-stock-mod@crhhaa-mods
 ```
 
-Run the uninstall from the same project, and match the scope you installed
-with: a `user` install needs `--scope user`. Uninstalling leaves the runtime
-files behind in `~/.claude/stock-band/<project slug>/` (quote cache,
-heartbeat, 永豐's log and pid, the SDK's own `shioaji.log`, and any holdings
-永豐 fetched) — delete that whole folder to clean those up too. The folder
-only exists once 永豐's fetcher has run; a Yahoo-only install never creates it.
+更新完要重開 Claude Code，看 footer 的版本號有沒有變。
 
-## Nothing shows up?
-
-Four different causes produce the exact same symptom — no band, and no error
-message anywhere — so check all four in order:
-
-1. `claude --version` needs to be 2.1.269 or later.
-2. Open Claude Code in that project and run `! echo
-   $CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`. It needs to print `1`. A blank line
-   means the flag is off — merge `{ "env": {
-   "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }` into
-   `~/.claude/settings.json` (add just that key if `env` already exists).
-3. Fully quit and reopen Claude Code after editing settings.
-   `/reload-plugins` does not re-read `env`.
-4. Confirm the mod installed into the project you have open right now
-   (`--scope local` scopes one install to one project):
-
-   ```sh
-   sed -n '/tw-stock-mod@darrelltw-mods/,/^    \]/p' ~/.claude/plugins/installed_plugins.json | grep projectPath
-   ```
-
-   It prints one path per install; this project must be one of them. If it is not, run the
-   install command again from inside this project's directory. (`claude
-   plugin list` will not help here — every local install prints the same
-   `tw-stock-mod@darrelltw-mods / Scope: local` line with no path.)
-
-## Requirements
-
-- **Claude Code 2.1.269 or later.** Drawing above the prompt does not exist
-  before that.
-- **`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`.** Function hooks are early access;
-  without the flag Claude Code ignores the `modules` key and nothing loads.
-- **An interactive terminal.** `AbovePrompt` is terminal-only — nothing draws
-  in `claude -p`, the desktop app, or mobile. Measured on macOS iTerm2,
-  Terminal.app, and tmux. Windows and the VS Code integrated terminal are
-  untested — reports welcome.
-
-## Repo layout
-
-```
-.claude-plugin/marketplace.json   makes this repo installable as a marketplace
-docs/api-notes.md                 function-hooks API facts every mod here relies on, with sources
-mods/<name>/                      one mod per folder, each its own plugin
-  .claude-plugin/plugin.json      that mod's manifest
-  hooks/                          its hooks module and Client board
-  README.md                       its own docs
-```
-
-Adding a mod means dropping a folder under `mods/` and adding one entry to
-`.claude-plugin/marketplace.json`. The repo root is only ever the marketplace,
-never a plugin itself.
-
-## Develop
+**移除：**
 
 ```sh
-# type-check a mod (needs the early-access types: run /plugin-types in a Claude
-# Code session opened in this repo first)
-bunx -p typescript tsc -p mods/tw-stock-mod
-
-# lint
-bunx --bun oxlint@1.83.0 mods/tw-stock-mod/hooks --deny-warnings
-
-# validate the marketplace manifest
-claude plugin validate .
+claude plugin uninstall tw-stock-mod@crhhaa-mods --scope user
+claude plugin marketplace remove crhhaa-mods
 ```
 
-Never name a local variable `h` in any `hooks/*.tsx` file — every JSX tag in
-those files compiles to a call of `h`.
+---
 
-## Author
+## 7. 看不到看板？
 
-**Darrell**
+依序檢查這四項（它們的症狀一模一樣：沒有看板，也沒有任何錯誤訊息）：
 
-- X: [@darrell_tw_](https://x.com/darrell_tw_)
-- Threads: [@darrell_tw_](https://www.threads.com/@darrell_tw_)
-- Instagram: [@darrell_tw_](https://www.instagram.com/darrell_tw_/)
-- Facebook: [darrelltw](https://www.facebook.com/darrelltw)
-- LinkedIn: [darrell-wang-tw](https://www.linkedin.com/in/darrell-wang-tw/)
-- GitHub: [@darrell-tw](https://github.com/darrell-tw)
-- Email: info@darrelltw.com
+1. `claude --version` 要 **2.1.269 以上**
+2. 在 Claude Code 裡輸入 `! echo $CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`，要印出 **`1`**。印出空白的話，回去做安裝步驟 ①
+3. 改完 `settings.json` 要**完全關掉 Claude Code 再開**，`/reload-plugins` 不會重新讀取 `env`
+4. 確認用的是一般終端機，不是 `claude -p`、桌面版或 VS Code 內建終端機（VS Code 尚未測試）
 
-Issues and PRs welcome.
+---
 
-## License
+## 給開發者
 
-[MIT](LICENSE). Use it, change it, ship it in something you sell — just keep
-the copyright notice.
+```
+.claude-plugin/marketplace.json   讓這個 repo 可以當 marketplace 安裝
+mods/tw-stock-mod/                股票看板本體
+  .claude-plugin/plugin.json      版本號在這裡，改 code 後記得 +1
+  hooks/register.tsx              資料：報價、設定、分頁
+  hooks/board.tsx                 畫面：表格版面
+  scripts/dev/run-checks.sh       全部檢查，改完跑一次
+  README.md                       完整技術文件（英文，原作者撰寫）
+```
+
+```sh
+bash mods/tw-stock-mod/scripts/dev/run-checks.sh   # 全部要 PASS
+```
+
+合併原作者的更新：
+
+```sh
+git fetch upstream
+git merge upstream/main
+```
+
+## 致謝與授權
+
+原作者 **Darrell Wang**（[@darrell_tw_](https://x.com/darrell_tw_)／[GitHub](https://github.com/darrell-tw)），這個看板的設計與絕大部分程式碼都出自他的 [darrelltw-mods](https://github.com/darrell-tw/darrelltw-mods)。
+
+[MIT](LICENSE) 授權。

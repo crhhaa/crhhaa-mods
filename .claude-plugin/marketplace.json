@@ -1,12 +1,10 @@
 {
-  "name": "darrelltw-mods",
+  "name": "crhhaa-mods",
   "owner": {
-    "name": "Darrell Wang",
-    "email": "info@darrelltw.com",
-    "url": "https://x.com/darrell_tw_"
+    "name": "crhhaa"
   },
   "metadata": {
-    "description": "Darrell Wang 做的 Claude Code mods：都在輸入框上面那條區域畫東西，都不花模型 token"
+    "description": "crhhaa 改自 Darrell Wang 的 Claude Code mods：都在輸入框上面那條區域畫東西，都不花模型 token"
   },
   "plugins": [
     {

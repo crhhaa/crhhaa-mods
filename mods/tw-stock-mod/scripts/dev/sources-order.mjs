@@ -118,11 +118,11 @@ const b = await runCase('(b) twSource: "mis" aliases to ["mis"]', {
 const bOk = b.logs.some(l => l.includes('mis.twse.com.tw'))
 console.log(`(b) PASS=${bOk}\n`)
 
-// (c) default is ["yahoo"] with no twSources/twSource stated at all
-const c = await runCase('(c) default twSources is ["yahoo"]', {
+// (c) default is ["mis", "yahoo"] with no twSources/twSource stated at all
+const c = await runCase('(c) default twSources is ["mis", "yahoo"]', {
   projectText: JSON.stringify({ market: 'tw' }),
 })
-const cOk = c.logs.some(l => l.includes('query1.finance.yahoo.com')) && c.p?.sourceLabel === 'Yahoo 延遲'
+const cOk = c.logs.some(l => l.includes('mis.twse.com.tw')) && c.p?.sourceLabel === '證交所 延遲'
 console.log(`(c) PASS=${cOk}\n`)
 
 // (d) ["shioaji", "yahoo"] with no quotes file (shioaji has nothing fresh) -

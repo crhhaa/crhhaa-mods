@@ -205,7 +205,11 @@ const TW_INDICES: TwIndex[] = [
 const TW_YAHOO_INDEX = '^TWII' // the Yahoo route's only index; ^TWOII answers a year-old close
 
 /** a footer index row on the MIS route; `code`/`ex` are what misChannel() reads */
-type TwIndex = { code: string; name: string; ex: TwExchange }
+// `ex: 'futures'` is not a TWSE channel at all: it is a 台指期 card the
+// footer flaps alongside the indices, priced from 期交所 MIS on its own
+// cadence (feedFutures) because futures trade nights when the stock market
+// is closed and its snapshot has stopped updating
+type TwIndex = { code: string; name: string; ex: TwExchange | 'futures' }
 
 type MarketId = 'tw' | 'us' | 'crypto'
 type Phase = 'open' | 'closed'
@@ -585,10 +589,12 @@ type QuoteRow = {
   prevClose: number
   bars?: Bar[]
   /**
-   * 24h turnover in USDT (Pionex's `amount` field, NOT `volume` - `volume`
-   * is the coin's own unit count, which is meaningless to rank one coin
-   * against another; see effectiveSort/the `'volume'` sort branch below).
-   * Crypto only - tw/us never set this.
+   * The board's 量 column. Crypto: 24h turnover in USDT (Pionex's `amount`
+   * field, NOT `volume` - `volume` is the coin's own unit count, which is
+   * meaningless to rank one coin against another; see effectiveSort/the
+   * `'volume'` sort branch below). Taiwan: today's volume in 張 (MIS `v`, or
+   * Yahoo's shares / 1000). US: today's volume in shares. Only crypto sorts
+   * by it.
    */
   amount?: number
   /**
@@ -917,7 +923,7 @@ function defaultConfig(): Config {
     highlight: true,
     columns: 'auto',
     feed: 'auto',
-    twSources: ['yahoo'],
+    twSources: ['mis', 'yahoo'],
     feedMs: FEED_MS_DEFAULT,
     pageMs: PAGE_MS_DEFAULT,
     twIndices: TW_INDICES,
@@ -957,8 +963,14 @@ function defaultConfig(): Config {
   }
 }
 
-/** resolves `"auto"` off the watchlist length; an explicit 1/2 always wins */
-function effectiveColumns(cfg: Config, listLength: number): 1 | 2 {
+// board.tsx's fitsTwoColumns() threshold (MIN_TWO_COL_WIDTH 118 out of
+// `width - 1`) - keep the two in step. Below it the board can only draw the
+// single-column table, so paging has to drop to 5 or ranks 6-10 never show.
+const TWO_COL_MIN_COLS = 119
+
+/** resolves `"auto"` off the watchlist length; an explicit 1/2 wins unless the terminal is too narrow for 2 */
+function effectiveColumns(cfg: Config, listLength: number, cols: number): 1 | 2 {
+  if (cols < TWO_COL_MIN_COLS) return 1
   if (cfg.columns === 1 || cfg.columns === 2) return cfg.columns
   return listLength > PAGE_SIZE_1COL ? 2 : 1
 }
@@ -994,8 +1006,9 @@ function marketRequests(cfg: Config, market: MarketId): number {
   // and a safe overestimate for the budget floor below).
   // MIS answers the whole list plus both indices in one call, whatever the
   // list length - there is no sparkline column left to pay Yahoo for on top.
-  if (cfg.twSources[0] === 'mis') return 1
-  return Math.ceil((cfg.lists.tw.length + 1) / SPARK_BATCH)
+  const futures = cfg.twIndices.some(i => i.ex === 'futures') ? 1 : 0
+  if (cfg.twSources[0] === 'mis') return 1 + futures
+  return Math.ceil((cfg.lists.tw.length + 1) / SPARK_BATCH) + futures
 }
 
 /**
@@ -1188,10 +1201,61 @@ function parseTwIndices(value: unknown): TwIndex[] {
     out.push({
       code,
       name: str(entry.name, known?.name ?? code.toUpperCase()),
-      ex: entry.ex === 'otc' ? 'otc' : 'tse',
+      ex: entry.ex === 'otc' ? 'otc' : entry.ex === 'futures' ? 'futures' : 'tse',
     })
   }
-  return out.length > 0 ? out : TW_INDICES
+  // feedTwMis reads the market off the first real index, so a list holding
+  // only futures still gets TAIEX underneath it
+  if (!out.some(i => i.ex !== 'futures')) out.unshift(TW_INDICES[0])
+  return out
+}
+
+// --- 台指期 (期交所 MIS) ---------------------------------------------------
+// Keyless, one POST answers every TXF contract plus the spot index. Day
+// session 08:45-13:45 is MarketType 0; night 15:00-05:00 is 1. Measured
+// 2026-10-02: rows come back spot first (TXF-S / TXF-P), then contracts by
+// expiry, so the first non-spot row is the near month.
+const TAIFEX_URL = 'https://mis.taifex.com.tw/futures/api/getQuoteList'
+// ponytail: outside trading hours a futures quote only moves at a session's
+// close, so it is re-read every 10 min instead of computing each session's
+// exact end; holidays are not modelled, same as phaseOf
+const FUTURES_IDLE_MS = 600_000
+
+/** Taipei clock -> which session's numbers are the latest: day from 08:45 until the night opens at 15:00 on a weekday, night otherwise */
+function futuresMarketType(now: number): '0' | '1' {
+  const { dow, minutes } = localParts(now, TAIPEI_OFFSET)
+  return isWeekday(dow) && minutes >= 525 && minutes < 900 ? '0' : '1'
+}
+
+/** whether a futures session is trading right now (day 08:45-13:45 Mon-Fri, night 15:00-05:00 Mon night through Sat morning) */
+function futuresTrading(now: number): boolean {
+  const { dow, minutes } = localParts(now, TAIPEI_OFFSET)
+  if (isWeekday(dow) && ((minutes >= 525 && minutes < 825) || minutes >= 900)) return true
+  return dow >= 2 && dow <= 6 && minutes < 300
+}
+
+function futuresBody(code: string, marketType: '0' | '1'): string {
+  return JSON.stringify({ MarketType: marketType, SymbolType: 'F', KindID: '1', CID: code, ExpireMonth: '', RowSize: '全部', PageNo: '', SortColumn: '', AscDesc: 'A' })
+}
+
+/** the near-month contract as a footer card, or undefined for an answer with none */
+function parseFutures(text: string, name: string): IndexRow | undefined {
+  let root: Record<string, unknown> | undefined
+  try {
+    root = asRecord(JSON.parse(text) as unknown)
+  } catch {
+    return undefined
+  }
+  const list = asRecord(root?.RtData)?.QuoteList
+  const rows = Array.isArray(list) ? list.map(asRecord) : []
+  const near = rows.find(r => r && !/-[SP]$/.test(str(r.SymbolID, '')))
+  if (!near) return undefined
+  // CLastPrice is '' before the session's first trade; the reference price stands in
+  const value = [misNum(near.CLastPrice), misNum(near.CRefPrice)].find(v => Number.isFinite(v))
+  if (value === undefined) return undefined
+  const change = misNum(near.CDiff)
+  const pct = misNum(near.CDiffRate)
+  return { name, value, change: Number.isFinite(change) ? change : 0, pct: Number.isFinite(pct) ? pct : 0 }
 }
 
 type QuotesFile = {
@@ -1199,7 +1263,7 @@ type QuotesFile = {
   market?: MarketId
   /** where the snapshot came from, so the band can say so in its footer */
   origin?: 'file' | 'live'
-  /** what the footer calls that source, e.g. `證交所 即時`; '' falls back to the origin */
+  /** what the footer calls that source, e.g. `證交所 延遲`; '' falls back to the origin */
   sourceLabel?: string
   /**
    * when the prices traded, not when this module read them. The band prints
@@ -1273,6 +1337,8 @@ function parseQuotes(text: string | undefined, now: number): QuotesFile | undefi
       prevClose: typeof entry.prevClose === 'number' ? entry.prevClose : undefined,
       name: typeof entry.name === 'string' ? entry.name : undefined,
       bars: parseBars(entry.bars),
+      // the 量 column (see QuoteRow.amount); quoteRow drops it when undefined
+      amount: typeof entry.amount === 'number' ? entry.amount : undefined,
     }
   }
   const market = root.market === 'tw' || root.market === 'us' ? root.market : undefined
@@ -1534,7 +1600,9 @@ function parseMis(text: string): { quotes: Record<string, FileQuote>; tradedAt: 
     const prevClose = misNum(entry.y)
     if (!code || price === undefined || !Number.isFinite(prevClose)) continue
     const name = str(entry.n, '')
-    out[code] = { price, prevClose, ...(name ? { name } : {}) }
+    // `v` is today's cumulative volume in 張; indices have none
+    const vol = misNum(entry.v)
+    out[code] = { price, prevClose, ...(name ? { name } : {}), ...(Number.isFinite(vol) ? { amount: vol } : {}) }
     // tlong is already in milliseconds
     const at = misNum(entry.tlong)
     if (Number.isFinite(at)) tradedAt = Math.max(tradedAt, at)
@@ -1572,7 +1640,10 @@ function parseSpark(text: string): { quotes: Record<string, FileQuote>; tradedAt
     const price = num(meta.regularMarketPrice, NaN)
     const prevClose = num(meta.previousClose, num(meta.chartPreviousClose, NaN))
     if (!Number.isFinite(price) || !Number.isFinite(prevClose)) continue
-    out[symbol] = { price, prevClose }
+    // shares; a Taiwan symbol (2330.TW / 6488.TWO) reads in 張 like MIS does
+    const shares = num(meta.regularMarketVolume, NaN)
+    const vol = /\.TWO?$/.test(symbol) ? shares / 1000 : shares
+    out[symbol] = { price, prevClose, ...(Number.isFinite(vol) ? { amount: vol } : {}) }
     // Yahoo answers seconds; the band works in milliseconds
     tradedAt = Math.max(tradedAt, num(meta.regularMarketTime, 0) * 1000)
   }
@@ -1698,6 +1769,8 @@ function buildProps(
   view: View,
   /** which code the chart view is following; undefined or off-screen falls back to position 0 */
   focusCode: string | undefined,
+  /** terminal width, for whether two columns fit */
+  cols: number,
 ): BoardProps {
   const { market, phase } = pickMarket(now, mode)
   const conf = MARKETS[market]
@@ -1723,7 +1796,7 @@ function buildProps(
       // particular code (a fetcher whose own list is narrower than the
       // band's, or a gap the Yahoo bridge merge in quotesFor did not cover
       // either). A demo-walk number here would look like a real price under
-      // a 永豐 即時/證交所 即時 footer, so this draws as a dim placeholder
+      // a 永豐 即時/證交所 延遲 footer, so this draws as a dim placeholder
       // instead (board.tsx reads QuoteRow.noData).
       return { ...quoteRow(sym, sym.prevClose, sym.prevClose), noData: true }
     }
@@ -1760,7 +1833,7 @@ function buildProps(
   // explicit override). Either way the table Client is always the same 8
   // terminal rows: one page is on the board and the rest wait their turn, the
   // way a departures board shows the next five flights rather than growing.
-  const columns = effectiveColumns(cfg, list.length)
+  const columns = effectiveColumns(cfg, list.length, cols)
   const perPage = pageSize(columns)
   const pages = Math.max(1, Math.ceil(quotes.length / perPage))
   lastPageCount = pages
@@ -1953,10 +2026,13 @@ function buildProps(
     index: { name: conf.indexName, value: idxValue, change: idxChange, pct: idxPct },
     // Taiwan has one index and no feed, so it falls through to the single row
     // and the board's flip finds nothing to flip
-    indices:
-      quotesFile?.indices && quotesFile.indices.length > 0
+    indices: [
+      ...(quotesFile?.indices && quotesFile.indices.length > 0
         ? quotesFile.indices
-        : [{ name: conf.indexName, value: idxValue, change: idxChange, pct: idxPct }],
+        : [{ name: conf.indexName, value: idxValue, change: idxChange, pct: idxPct }]),
+      // 台指期 always flaps last, after the stock indices
+      ...(market === 'tw' && futuresCard ? [futuresCard] : []),
+    ],
     source: usedFile ? (quotesFile?.origin ?? 'file') : 'demo',
     sourceLabel: usedFile ? (quotesFile?.sourceLabel ?? '') : '',
     version,
@@ -2042,6 +2118,8 @@ let cryptoSupplyCooldownUntil = 0 // set after a failed/empty CoinGecko answer
 let cryptoSupplyWarned = false // this session's one-time "falling back to volume" log
 let cryptoUnmappedWarned = false // this session's one-time "no CoinGecko id for ..." log
 let feedSeq = 0 // one per snapshot the feed accepted; drives the board's live dot
+let futuresCard: IndexRow | undefined // the 台指期 footer card, see feedFutures
+let futuresAt = 0 // when futuresCard was last fetched
 let nextFeedAt = 0 // when the next request is due; the board counts down to it
 let barsInFlight = false
 // the render hook asks for the chart view's K bars; the feed owns the request
@@ -2967,7 +3045,7 @@ export const register: Register = on => {
       // the first entry is the one the market is read by, so an empty list
       // would leave the board with no headline index at all - parseTwIndices
       // never returns one
-      const indices = config.twIndices
+      const indices = config.twIndices.filter((i): i is TwIndex & { ex: TwExchange } => i.ex !== 'futures')
       const channels = [...list.map(misChannel), ...indices.map(misChannel)]
       const res = await $.http.fetch(misUrl(channels, now), { headers: FEED_HEADERS })
       if (!res.ok) {
@@ -2989,7 +3067,9 @@ export const register: Register = on => {
         indexKey: indices[0].code,
         tradedAt,
         now,
-        sourceLabel: '證交所 即時',
+        // MIS refreshes about every 5 s and the band polls every feedMs, so this
+        // runs seconds behind - it must not claim 即時 (that is 永豐's tag)
+        sourceLabel: '證交所 延遲',
         barLabel: '5 分 K',
       })
       return true
@@ -3279,6 +3359,24 @@ export const register: Register = on => {
           await fetchCryptoSupply(now)
         } else await feedTw(now)
       }
+      if (feedMarkets(config, onScreen).includes('tw')) await feedFutures(now)
+    }
+
+    /** the 台指期 card, on its own cadence: every tick while a session trades, every FUTURES_IDLE_MS otherwise */
+    const feedFutures = async (now: number) => {
+      const spec = config.twIndices.find(i => i.ex === 'futures')
+      if (!spec) return
+      if (!futuresTrading(now) && now - futuresAt < FUTURES_IDLE_MS) return
+      const res = await $.http.fetch(TAIFEX_URL, {
+        method: 'POST',
+        headers: { ...FEED_HEADERS, 'Content-Type': 'application/json' },
+        body: futuresBody(spec.code, futuresMarketType(now)),
+      })
+      if (!res.ok) return $.ui.log(`tw-stock-mod: 期交所 HTTP ${res.status}, keeping the last 台指期`)
+      const card = parseFutures(res.text, spec.name)
+      if (!card) return $.ui.log('tw-stock-mod: 期交所 answered no 台指期 contract')
+      futuresCard = card
+      futuresAt = now
     }
 
     // K bars cost one request per symbol, so only the symbol the trend view is
@@ -3409,7 +3507,7 @@ export const register: Register = on => {
     // off the identical list rather than two `buildCycle(stops)` calls that
     // could observe different `stops` if this ever moved between them.
     const cycleStops = buildCycle(stops)
-    const props = buildProps(now, config, quotesFor(pickMarket(now, mode).market, now), mode, view, focusCode)
+    const props = buildProps(now, config, quotesFor(pickMarket(now, mode).market, now), mode, view, focusCode, cols)
     // buildProps chases focusCode to whatever position it actually landed on
     // (falling back to 0 when the code is unset, paged off, or gone from the
     // list) - syncing it back here keeps that landing code, not a stale one,

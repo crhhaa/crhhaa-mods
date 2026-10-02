@@ -10,9 +10,10 @@ swaps the table for one symbol's K bars.
 ![preview](prototype/stock-band-preview.png)
 
 **Both markets are live, each from its own source, and the footer says which.**
-Both read Yahoo's public endpoints by default (`Yahoo 即時` for the US,
-`Yahoo 延遲` for Taiwan, since Yahoo's Taiwan quotes run about twenty minutes
-behind) — no key and no account either way. Set `"twSources": ["shioaji"]` for
+Taiwan reads 證交所 MIS by default (`證交所 延遲` — seconds behind, since MIS
+refreshes about every 5 s and the band polls every `feedMs` — falling back to
+`Yahoo 延遲`, about twenty minutes behind, when MIS answers nothing) and the US reads
+Yahoo (`Yahoo 即時`) — no key and no account either way. Set `"twSources": ["shioaji"]` for
 real intraday ticks through a 永豐 brokerage account, or `["capital"]` for a
 群益 one on Windows — the band runs the fetcher itself either way (`永豐 即時` /
 `群益 即時`). A market the feed cannot reach falls back to a
@@ -196,18 +197,18 @@ highlighted top mover:
   change$ and change% are right-anchored after it, capped at column 74. Under
   ~46 columns the name goes too.
 - **Two columns once the watchlist holds more than five symbols** — `columns` in
-  the config controls it (see [Configure](#configure)). Each half only carries
-  代號/名稱/價格/變更% (變更$ has no room next to a second symbol), filled
-  column-major off the current sort: the left half is ranks 1–5 on the page,
-  the right half ranks 6–10, so the biggest gainers head the left column and
-  the biggest fallers end the right one under the default change% sort. A
-  6-column gutter separates the halves so 變更% and the next 代號 do not read
-  as one run of digits, and the two-column table caps at 104 columns (the
-  single-column one caps at 74). **Below 77 columns it falls back to the
-  single-column table instead of squeezing** — a half needs at least 35
-  columns (代號 + a name + 價格 + 變更%; see `MIN_HALF_WIDTH` in
-  `hooks/board.tsx`), and two of those plus the gutter is 76 out of
-  `width - 1`.
+  the config controls it (see [Configure](#configure)). Each half carries the
+  full set — 代號/名稱/價格/變更$/變更%/量 — filled column-major off the
+  current sort: the left half is ranks 1–5 on the page, the right half ranks
+  6–10. That needs room: a half is at least 56 columns (see `MIN_HALF_WIDTH`
+  in `hooks/board.tsx`), so **two columns need a terminal of 119 columns or
+  wider; below that the band draws the single-column table and pages 5 at a
+  time** (`TWO_COL_MIN_COLS` in `hooks/register.tsx` keeps the paging in step).
+  Two-column mode drops the top-mover highlight.
+- **量** is today's volume: 張 for Taiwan (MIS `v`, or Yahoo's shares / 1000),
+  shares for the US shortened to K/M/B, and for crypto 24h USDT turnover,
+  headed 額. It is the first column to go on a narrow single-column table. A
+  quotes file can supply it as `amount` per symbol.
 - **Rows are sorted by change%** (hence `↓變更%` in the header); the biggest
   mover gets the highlighted row in the single-column table. Two-column mode
   drops the highlight — a row there can hold two unrelated symbols, so there
@@ -291,7 +292,7 @@ who opens it keeps their own preference — see
 | `highlight` | `true` | highlight the biggest mover's row (single-column table only) |
 | `columns` | `"auto"` | how many symbols a row draws: `auto` = 1 when the watchlist is 5 symbols or fewer, 2 for 6 or more; `1`/`2` force it (the board still falls back to 1 if the terminal is too narrow — see [What the band shows](#what-the-band-shows)) |
 | `feed` | `"auto"` | `auto` prices whichever market is on the band; `both` keeps the other side warm; `tw`/`us` pins one; `off` = demo prices only |
-| `twSources` | `["yahoo"]` | Taiwan's routes, in preference order — the band tries the first and falls through to the next for a tick that one has nothing fresh for. `yahoo` = Yahoo, ~20 min behind Taiwan but one request whatever the list length; `shioaji` = 永豐 real-time ticks on macOS/Linux and `capital` = 群益 real-time ticks on Windows, the band runs the fetcher itself either way — see [永豐 Shioaji as that fetcher](#永豐-shioaji-as-that-fetcher) and [群益 Capital as that fetcher](#群益-capital-as-that-fetcher). A legacy `"twSource": "x"` (a single string) still works as an alias for `["x"]`. The shipped default never includes a broker route — put that in your own `~/.claude/stock-band.json` |
+| `twSources` | `["mis", "yahoo"]` | Taiwan's routes, in preference order — the band tries the first and falls through to the next for a tick that one has nothing fresh for. `yahoo` = Yahoo, ~20 min behind Taiwan but one request whatever the list length; `mis` = 證交所 MIS, keyless and real-time (each `feedMs` poll), also one request for the whole list (`"twSources": ["mis", "yahoo"]` falls back to Yahoo when MIS answers nothing); `shioaji` = 永豐 real-time ticks on macOS/Linux and `capital` = 群益 real-time ticks on Windows, the band runs the fetcher itself either way — see [永豐 Shioaji as that fetcher](#永豐-shioaji-as-that-fetcher) and [群益 Capital as that fetcher](#群益-capital-as-that-fetcher). A legacy `"twSource": "x"` (a single string) still works as an alias for `["x"]`. The shipped default never includes a broker route — put that in your own `~/.claude/stock-band.json` |
 | `shioaji` | `{ "python": "python3", "env": "~/.sinobon.env", "interval": 10 }` | read only when `"shioaji"` is somewhere in `twSources` — the interpreter, the env file holding `SINOBON_API_KEY`/`SINOBON_SECRET_KEY` (`~` expands to `$HOME`), and seconds between snapshots |
 | `capital` | `{ "python": "python", "env": "~/.capital.env", "dll": "", "interval": 10, "indices": [TSEA, OTCA] }` | read only when `"capital"` is somewhere in `twSources` — the interpreter (must have `comtypes` and match the registered 元件's bitness), the env file holding `CAPITAL_USER_ID`/`CAPITAL_PASSWORD`, the path to the registered `SKCOM.dll` (**no default** — 群益 ships a zip with no install location), seconds between snapshots, and the SKCOM 商品代號 the footer's index board flaps through (`[]` turns it off) |
 | `feedMs` | `30000` | seconds between feed requests, in ms (floor 15000 — below that Yahoo answers 429; the request budget can widen it further) |

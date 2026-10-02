@@ -46,8 +46,8 @@ description: 引導使用者設定 tw-stock-mod 的台股／美股觀察清單
 
 ### 3a. 台股：打 Yahoo spark，同時帶 `.TW` 與 `.TWO` 後綴
 
-band 的台股報價預設走 Yahoo（`twSources: ["yahoo"]`，見 3b），或 `twSources: ["shioaji"]`
-（永豐即時，見 README）時也是走同一批代號。驗證代號用同一支 spark endpoint——代號本身看不出
+band 的台股報價預設走證交所 MIS、MIS 沒回應時退回 Yahoo（`twSources: ["mis", "yahoo"]`），
+或 `twSources: ["shioaji"]`（永豐即時，見 README）時也是走同一批代號。驗證代號用同一支 spark endpoint——代號本身看不出
 是上市還是上櫃，所以每個代號**同時查兩個後綴**：
 
 ```

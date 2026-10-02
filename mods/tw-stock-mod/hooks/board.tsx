@@ -29,6 +29,8 @@ export type QuoteRow = {
   prevClose: number
   /** K bars, oldest first; only the focused symbol (the chart view) carries these */
   bars?: Bar[]
+  /** the 量 column: tw 張, us shares, crypto 24h USDT turnover (額); absent = blank cell */
+  amount?: number
   /**
    * what this row said before the last update; absent when nothing moved.
    * `code`/`name` only appear on a page turn, when the slot changed symbol.
@@ -204,7 +206,7 @@ const PAGE_FLIP_MS = 1100
 const CYCLE_MS = HOLD_MS + FLIP_MS
 const RESTING = Number.MAX_SAFE_INTEGER
 // what the band signs itself with, bottom right
-const CREDIT = 'darrell_tw_'
+const CREDIT = 'crhhaa'
 
 // no blank on the numeric drum: a space riffling through the middle of a price
 // reads as a glitch, not as a flap. The leading pad a shorter number sits in is
@@ -348,13 +350,14 @@ function cardFields(idx: IndexRow, w: number[], market: MarketId): Field[] {
     { text: padLeft(thousands(idx.value), w[1]), fg: WHITE, drum: NUM_DRUM },
     { text: arrow, fg, drum: '' },
     { text: padLeft(signed(idx.change), w[2]), fg, drum: NUM_DRUM },
+    { text: padLeft(`${signed(idx.pct)}%`, w[3]), fg, drum: NUM_DRUM },
   ]
 }
 
 /** the widest each field gets across every card, so the layout never shifts */
 function cardWidths(board: IndexRow[]): number[] {
   const wide = (f: (i: IndexRow) => string) => Math.max(...board.map(i => dispWidth(f(i))))
-  return [wide(i => i.name), wide(i => thousands(i.value)), wide(i => signed(i.change))]
+  return [wide(i => i.name), wide(i => thousands(i.value)), wide(i => signed(i.change)), wide(i => `${signed(i.pct)}%`)]
 }
 
 /**
@@ -390,7 +393,7 @@ const TAIL_GAP = 3
  * The table footer's right-hand end: the clock (bare when the market is open
  * - 更新 said nothing the position on the row did not already say - 收盤
  * HH:MM when it is not), its live dot, the feed countdown, the source tag,
- * and the credit sign-off. `darrell_tw_` is a normal part of this footer now,
+ * and the credit sign-off. `crhhaa` is a normal part of this footer now,
  * not the first thing a narrow terminal drops - so a tight row drops the
  * countdown first, then the credit, then the clock and dot, and keeps the
  * source tag as the one thing that never goes. The dot needs its own color
@@ -596,6 +599,17 @@ function signed(value: number, decimals = 2): string {
   const sign = value > 0 ? '+' : value < 0 ? '-' : ''
   return sign + thousands(Math.abs(value), decimals)
 }
+// 量: Taiwan reads whole 張 (32,104); US shares and crypto turnover run to
+// tens of millions, so they shorten to K/M/B to fit VOL_W
+function volText(market: MarketId, v: number | undefined): string {
+  if (v === undefined) return ''
+  if (market === 'tw') return thousands(v, 0)
+  for (const [n, s] of [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']] as const) if (v >= n) return `${(v / n).toFixed(1)}${s}`
+  return v.toFixed(0)
+}
+function volHead(market: MarketId): string {
+  return market === 'crypto' ? '額' : '量'
+}
 
 /**
  * How many decimals a watchlist PRICE cell prints with. tw/us stay a fixed
@@ -633,15 +647,23 @@ type Layout = {
   priceRight: number
   chgRight: number
   pctRight: number
+  /** right edge of the 量 column; equals pctRight when the layout has no 量 */
+  volRight: number
   showName: boolean
 }
 
+// 量 field width: a 1-column gap plus up to "1,234,567" 張
+const VOL_W = 10
+
 // right-anchored numeric columns, capped at 74 so the table does not stretch
 // across a very wide terminal. Price is the widest and brightest column - it
-// is the number this band is for. Under ~46 columns the name goes.
-function layout(width: number): Layout {
+// is the number this band is for. Under ~46 columns the name goes. `vol`
+// reserves VOL_W more on the right for the table's 量 column (cap 84); the
+// chart view never asks for it, so its plot keeps the full width.
+function layout(width: number, vol = false): Layout {
   const w = Math.max(46, width)
-  const pctRight = Math.min(w - 1, 74)
+  const volRight = Math.min(w - 1, vol ? 74 + VOL_W : 74)
+  const pctRight = vol ? volRight - VOL_W : volRight
   const chgRight = pctRight - 9
   const priceRight = chgRight - 11
   const priceCol = priceRight - 10 // reserved for the widest price, e.g. 1,396.14
@@ -654,51 +676,61 @@ function layout(width: number): Layout {
     priceRight,
     chgRight,
     pctRight,
+    volRight,
     showName: priceCol - nameCol >= 8,
   }
 }
 
+/** the table's single-column layout: with 量 while the name still fits, without it (量 goes first) once it would not */
+function tableLayout(width: number): Layout {
+  const withVol = layout(width, true)
+  return withVol.showName ? withVol : layout(width)
+}
+
 // Two symbols per row, when the page holds more than 5 (register.tsx decides
-// when; see BoardProps.columns). 變更$ has no room next to a second symbol,
-// so each half only carries 代號/名稱/價格/變更%, right-anchored the same way
-// the single-column table anchors them.
+// when; see BoardProps.columns). Each half carries the full single-column set
+// - 代號/名稱/價格/變更$/變更%/量 - right-anchored the same way the
+// single-column table anchors them.
 type HalfLayout = {
   symCol: number
   nameCol: number
   priceCol: number
   priceRight: number
+  chgRight: number
   pctRight: number
+  volRight: number
   showName: boolean
 }
 
-const TWO_COL_MAX = 104 // two halves need more room than one table's 74-column cap
-const TWO_COL_GUTTER = 6 // clear columns between the halves, so 變更% and the
+const TWO_COL_MAX = 134 // two full halves need far more room than one table's 84-column cap
+const TWO_COL_GUTTER = 6 // clear columns between the halves, so 量 and the
 // next 代號 do not read as one run of digits
 // Half-width floor, left to right: 代號 up to 6 chars + 1 gap (7) + a
 // 4-character name + 1 gap (9 - CJK counts double, so 4 characters is 8
-// columns) + the widest price, e.g. "1,396.14", + 1 gap (9) + the widest
-// 變更% field, e.g. "▼ -100.00%" (10). Below this a half cannot hold
-// 代號 + a name + 價格 + 變更% without cutting one of them, so the two-column
-// table falls back to the single-column one instead of squeezing:
-// 7 + 9 + 9 + 10 = 35 per half, twice that plus the gutter = 76. `layout2`
-// spends that 76 out of `width - 1`, the same one column short of the raw
-// terminal width the single-column `layout` reserves - so the terminal
-// itself needs to be 77 columns or wider, not 76, before two columns fit.
-const MIN_HALF_WIDTH = 35
-const MIN_TWO_COL_WIDTH = MIN_HALF_WIDTH * 2 + TWO_COL_GUTTER // 76, out of `width - 1`
+// columns) + the widest price, e.g. "1,396.14", + 1 gap (9) + 變更$, e.g.
+// "+100.00", + gaps (10) + the widest 變更% field, e.g. "▼ -100.00%", + 1 gap
+// (11) + 量 (VOL_W, 10). Below this a half cannot hold every column without
+// cutting one, so the two-column table falls back to the single-column one
+// instead of squeezing: 7 + 9 + 9 + 10 + 11 + 10 = 56 per half, twice that
+// plus the gutter = 118, out of `width - 1` - so the terminal itself needs
+// to be 119 columns or wider before two columns fit.
+const MIN_HALF_WIDTH = 56
+const MIN_TWO_COL_WIDTH = MIN_HALF_WIDTH * 2 + TWO_COL_GUTTER // 118, out of `width - 1`
 
 function layout2(width: number): [HalfLayout, HalfLayout] {
   const cap = Math.min(width - 1, TWO_COL_MAX)
   const halfW = Math.floor((cap - TWO_COL_GUTTER) / 2)
   const mkHalf = (leftEdge: number): HalfLayout => {
-    const pctRight = leftEdge + halfW
-    const priceRight = pctRight - 11
+    const volRight = leftEdge + halfW
+    const pctRight = volRight - VOL_W
+    const chgRight = pctRight - 11
+    const priceRight = chgRight - 10
     const priceCol = priceRight - 9
     const nameCol = leftEdge + 7
-    return { symCol: leftEdge, nameCol, priceCol, priceRight, pctRight, showName: priceCol - nameCol >= 8 }
+    return { symCol: leftEdge, nameCol, priceCol, priceRight, chgRight, pctRight, volRight, showName: priceCol - nameCol >= 8 }
   }
   const left = mkHalf(1)
-  const right = mkHalf(left.pctRight + 1 + TWO_COL_GUTTER)
+  const right = mkHalf(left.volRight + 1 + TWO_COL_GUTTER)
   return [left, right]
 }
 
@@ -906,7 +938,7 @@ function drawSymbolCell(
 }
 
 /**
- * One symbol inside a two-column table row: 代號/名稱/價格/變更% only, at the
+ * One symbol inside a two-column table row: 代號/名稱/價格/變更$/變更%/量, at the
  * given half's own columns. `slot` is this quote's position within its half
  * (0..4), which is what the row-turn stagger below is offset by - each half
  * turns independently, since a two-column row can hold two symbols whose
@@ -919,6 +951,7 @@ function drawTwoColQuote(r: Row, half: HalfLayout, q: QuoteRow, market: MarketId
 
   if (q.noData) {
     r.putRight(half.priceRight, '—', DIM)
+    r.putRight(half.chgRight, '—', DIM)
     r.putRight(half.pctRight, '—', DIM)
     return
   }
@@ -932,7 +965,10 @@ function drawTwoColQuote(r: Row, half: HalfLayout, q: QuoteRow, market: MarketId
   // mid-turn (was.price and q.price share the new price's own magnitude)
   const priceDecimals = quotePriceDecimals(market, q.price)
   flapRight(r, half.priceRight, thousands(was.price, priceDecimals), thousands(q.price, priceDecimals), WHITE, turn, half.priceCol, stagger)
+  flapRight(r, half.chgRight, signed(was.change, priceDecimals), signed(q.change, priceDecimals), color, turn, half.priceCol, stagger)
   flapRight(r, half.pctRight, pctText(was.pct), pctText(q.pct), color, turn, half.priceCol, stagger)
+  // 量 only grows, so it is put rather than flapped - a flap per tick on every row would be noise
+  r.putRight(half.volRight, volText(market, q.amount), DIM)
 }
 
 export default function StockBandBoard(props: BoardProps | undefined, surface: ClientSurface<State>) {
@@ -1041,7 +1077,7 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     () => new Row(),
   )
   const quotes = props.quotes.slice(0, MAX_TABLE_QUOTES)
-  // the feed names itself - 證交所 即時 and Yahoo 即時 are not the same claim -
+  // the feed names itself - 證交所 延遲 and Yahoo 延遲 are not the same claim -
   // and only a source that did not say falls back to a generic label
   const sourceName =
     props.source === 'demo'
@@ -1286,7 +1322,8 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     // terminal is too narrow for a readable half, even if register.tsx asked
     // for two - see fitsTwoColumns.
     const halves = props.columns === 2 && fitsTwoColumns(surface.columns || 80) ? layout2(surface.columns || 80) : undefined
-    const pctRight = halves ? halves[1].pctRight : lay.pctRight
+    const tl = tableLayout(surface.columns || 80)
+    const tableRight = halves ? halves[1].volRight : tl.volRight
 
     // rows 2..6 hold the quotes; row 0 is the header and row 1 the rule. In
     // two-column mode the left half owns everything up to its 變更% column and
@@ -1297,29 +1334,30 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     picker.hit = (x, y) => {
       const row = y - 2
       if (row < 0 || row >= TABLE_QUOTE_ROWS) return undefined
-      const index = halves && x > halves[0].pctRight ? row + TABLE_QUOTE_ROWS : row
+      const index = halves && x > halves[0].volRight ? row + TABLE_QUOTE_ROWS : row
       return index < pickable ? { pick: index } : undefined
     }
 
     const head = rows[0]
     if (halves) {
-      // Two symbols per row: 變更$ has no room next to a second symbol, so
-      // each half only labels 代號/價格/變更%.
       for (const half of halves) {
         head.put(half.symCol, '代號', HEAD)
         head.putRight(half.priceRight, '價格', HEAD)
+        head.putRight(half.chgRight, '變更$', HEAD)
         head.putRight(half.pctRight, props.sorted ? '↓變更%' : '變更%', HEAD)
+        head.putRight(half.volRight, volHead(props.market), HEAD)
       }
     } else {
-      head.put(lay.symCol, '代號', HEAD)
-      head.putRight(lay.priceRight, '價格', HEAD)
-      head.putRight(lay.chgRight, '變更$', HEAD)
-      head.putRight(lay.pctRight, props.sorted ? '↓變更%' : '變更%', HEAD)
+      head.put(tl.symCol, '代號', HEAD)
+      head.putRight(tl.priceRight, '價格', HEAD)
+      head.putRight(tl.chgRight, '變更$', HEAD)
+      head.putRight(tl.pctRight, props.sorted ? '↓變更%' : '變更%', HEAD)
+      if (tl.volRight > tl.pctRight) head.putRight(tl.volRight, volHead(props.market), HEAD)
     }
     // the rule doubles as the page indicator: it is the one full-width line on
     // the board with nothing else competing for its right-hand end
     const pageTag = props.pageCount > 1 ? ` ${props.page + 1}/${props.pageCount} ` : ''
-    const ruleW = Math.max(0, pctRight - lay.badgeCol - dispWidth(pageTag))
+    const ruleW = Math.max(0, tableRight - lay.badgeCol - dispWidth(pageTag))
     rows[1].put(lay.badgeCol, '─'.repeat(ruleW), RULE)
     if (pageTag) rows[1].put(rows[1].width(), pageTag, DIM)
 
@@ -1358,12 +1396,12 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
         // and a real board does not flap what did not change.
         const turned = q.was?.code !== undefined
         const rowStart = turned ? rowTurn - i * PAGE_ROW_STAGGER : RESTING
-        drawSymbolCell(r, lay.symCol, lay.nameCol, lay.showName, q, rowStart, turned)
+        drawSymbolCell(r, tl.symCol, tl.nameCol, tl.showName, q, rowStart, turned)
 
         if (q.noData) {
-          r.putRight(lay.priceRight, '—', DIM)
-          r.putRight(lay.chgRight, '—', DIM)
-          r.putRight(lay.pctRight, '—', DIM)
+          r.putRight(tl.priceRight, '—', DIM)
+          r.putRight(tl.chgRight, '—', DIM)
+          r.putRight(tl.pctRight, '—', DIM)
           continue
         }
 
@@ -1385,17 +1423,18 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
         // the price belong to different companies.
         const turn = q.was ? rowTurn - i * (turned ? PAGE_ROW_STAGGER : ROW_STAGGER) : RESTING
         const was = q.was ?? q
-        const left = lay.priceCol
+        const left = tl.priceCol
         const stagger = turned ? 0 : STAGGER
         // decimals off the CURRENT price so a flap does not change digit
         // count mid-turn; `change` shares it with `price` (same units, same
         // magnitude problem) - `pct` stays a flat 2, percentages have no
         // such range regardless of market
         const priceDecimals = quotePriceDecimals(props.market, q.price)
-        flapRight(r, lay.priceRight, thousands(was.price, priceDecimals), thousands(q.price, priceDecimals), WHITE, turn, left, stagger)
-        flapRight(r, lay.chgRight, signed(was.change, priceDecimals), signed(q.change, priceDecimals), color, turn, left, stagger)
-        flapRight(r, lay.pctRight, pctText(was.pct), pctText(q.pct), color, turn, left, stagger)
-        if (props.highlight && i === topMover) r.fillBg(ROW_HILIGHT, lay.pctRight)
+        flapRight(r, tl.priceRight, thousands(was.price, priceDecimals), thousands(q.price, priceDecimals), WHITE, turn, left, stagger)
+        flapRight(r, tl.chgRight, signed(was.change, priceDecimals), signed(q.change, priceDecimals), color, turn, left, stagger)
+        flapRight(r, tl.pctRight, pctText(was.pct), pctText(q.pct), color, turn, left, stagger)
+        if (tl.volRight > tl.pctRight) r.putRight(tl.volRight, volText(props.market, q.amount), DIM)
+        if (props.highlight && i === topMover) r.fillBg(ROW_HILIGHT, tl.volRight)
       }
     }
 
@@ -1435,7 +1474,7 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     // a bare clock there could read as still updating.
     putFooterTail(
       foot,
-      pctRight,
+      tableRight,
       open ? props.clock : `收盤 ${props.clock}`,
       open ? (beat % 2 === 0 ? '●' : '○') : '',
       tillFeed >= 0 ? ` · ${tillFeed}s` : '',
