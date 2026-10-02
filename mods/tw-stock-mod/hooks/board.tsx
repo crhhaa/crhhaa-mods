@@ -388,6 +388,8 @@ type TailPiece = { text: string; fg: string }
 
 /** clear columns a footer tail leaves between itself and the index block */
 const TAIL_GAP = 3
+/** clear columns between two index cards drawn side by side */
+const CARD_GAP = 3
 
 /**
  * The table footer's right-hand end: the clock (bare when the market is open
@@ -1447,22 +1449,33 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     // only one) just sits still - the flip has nothing to turn to.
     const foot = rows[7]
     const board = props.indices.length > 0 ? props.indices : [props.index]
-    const slot = board.length > 1 ? anim.slot % board.length : 0
-    const idx = board[slot]
-    const widths = cardWidths(board)
-    const to = cardFields(idx, widths, props.market)
-    const outgoing = board[(slot + board.length - 1) % board.length]
-    const from = cardFields(outgoing, widths, props.market)
-    // one index has nothing to turn to, so it never flaps
-    const flap = board.length > 1 ? anim.flap : RESTING
+    // Every card side by side when the row holds them all and still leaves
+    // the tail its shortest form; only a row too narrow for that flaps
+    // through them one at a time.
+    const sideBySide = board.map(i => cardFields(i, cardWidths([i]), props.market))
+    const sideWidth = sideBySide.reduce((w, fs) => w + fs.reduce((x, f) => x + dispWidth(f.text) + 1, -1), 0) + (board.length - 1) * CARD_GAP
+    if (board.length > 1 && lay.symCol + sideWidth + TAIL_GAP + dispWidth(sourceTagShort) <= tableRight) {
+      sideBySide.forEach((fields, n) => {
+        fields.forEach((f, i) => foot.put(i === 0 ? (n === 0 ? lay.symCol : foot.width() + CARD_GAP) : foot.width() + 1, f.text, f.fg))
+      })
+    } else {
+      const slot = board.length > 1 ? anim.slot % board.length : 0
+      const idx = board[slot]
+      const widths = cardWidths(board)
+      const to = cardFields(idx, widths, props.market)
+      const outgoing = board[(slot + board.length - 1) % board.length]
+      const from = cardFields(outgoing, widths, props.market)
+      // one index has nothing to turn to, so it never flaps
+      const flap = board.length > 1 ? anim.flap : RESTING
 
-    // the wave carries on across the field boundaries: each field's flaps start
-    // where the previous field's left off, so the row turns as one board
-    let offset = 0
-    for (let f = 0; f < to.length; f++) {
-      const text = flapField(from[f].text, to[f].text, to[f].drum, flap - offset)
-      foot.put(f === 0 ? lay.symCol : foot.width() + 1, text, to[f].fg)
-      offset += dispWidth(to[f].text) + 1
+      // the wave carries on across the field boundaries: each field's flaps start
+      // where the previous field's left off, so the row turns as one board
+      let offset = 0
+      for (let f = 0; f < to.length; f++) {
+        const text = flapField(from[f].text, to[f].text, to[f].drum, flap - offset)
+        foot.put(f === 0 ? lay.symCol : foot.width() + 1, text, to[f].fg)
+        offset += dispWidth(to[f].text) + 1
+      }
     }
     // The dot is the only thing on this board that says "still live", so it
     // has to move for a reason. On real quotes it flips once per snapshot the

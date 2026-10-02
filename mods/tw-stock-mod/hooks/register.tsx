@@ -187,8 +187,6 @@ const MIS_URL = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp'
 // nothing else about a symbol tells them apart - 6488 is 上櫃, 2330 is 上市.
 type TwExchange = 'tse' | 'otc'
 const TW_INDEX_SYMBOL = 't00' // 發行量加權股價指數, what MARKETS.tw calls its index
-// Latin names for the same reason the US ones are Latin: the board flaps one
-// character at a time and a Chinese character has no drum to riffle through.
 // they are named `code` rather than `symbol` so misChannel() takes them as-is
 // MIS answers every index on the same request as the quotes, so the length of
 // this list costs nothing. What it does cost is time on the footer: each row
@@ -196,10 +194,12 @@ const TW_INDEX_SYMBOL = 't00' // 發行量加權股價指數, what MARKETS.tw ca
 // `twIndices` in the config replaces the whole list - the exchange publishes
 // 146 of them (getCategory.jsp?ex=tse&i=TIDX lists every channel).
 const TW_INDICES: TwIndex[] = [
-  { code: TW_INDEX_SYMBOL, name: 'TAIEX', ex: 'tse' }, // 發行量加權股價指數
-  { code: 't24', name: 'SEMI', ex: 'tse' }, // 半導體類指數
-  { code: 't17', name: 'FINANCE', ex: 'tse' }, // 金融保險類指數
-  { code: 't15', name: 'SHIPPING', ex: 'tse' }, // 航運類指數
+  // Chinese names on the Taiwan board: a CJK character has no drum, so it is
+  // painted rather than riffled when the cards flap - the numbers still flap
+  { code: TW_INDEX_SYMBOL, name: '加權', ex: 'tse' }, // 發行量加權股價指數
+  { code: 't24', name: '半導體', ex: 'tse' }, // 半導體類指數
+  { code: 't17', name: '金融', ex: 'tse' }, // 金融保險類指數
+  { code: 't15', name: '航運', ex: 'tse' }, // 航運類指數
   // 櫃買 is { code: 'o00', name: 'TPEx', ex: 'otc' } - it needs the otc channel
 ]
 const TW_YAHOO_INDEX = '^TWII' // the Yahoo route's only index; ^TWOII answers a year-old close
@@ -1200,7 +1200,7 @@ function parseTwIndices(value: unknown): TwIndex[] {
     const known = TW_INDICES.find(i => i.code === code)
     out.push({
       code,
-      name: str(entry.name, known?.name ?? code.toUpperCase()),
+      name: str(entry.name, known?.name ?? (entry.ex === 'futures' ? '台指期' : code.toUpperCase())),
       ex: entry.ex === 'otc' ? 'otc' : entry.ex === 'futures' ? 'futures' : 'tse',
     })
   }

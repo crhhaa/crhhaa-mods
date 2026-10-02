@@ -58,6 +58,6 @@ for (const [label, now, wantType] of cases) {
   walk(tree)
   const last = props?.indices?.at(-1)
   ok(sent.length > 0 && sent.every(b => b.MarketType === wantType && b.CID === 'TXF'), `${label}: asks MarketType ${wantType} (sent ${sent.map(b => b.MarketType).join(',') || 'nothing'})`)
-  ok(last?.name === 'TXF' && last.value === 48475 && last.pct === -0.46 && props.indices.length >= 2, `${label}: near-month TXF card flaps after the stock index`)
+  ok(last?.name === '台指期' && last.value === 48475 && last.pct === -0.46 && props.indices.length >= 2, `${label}: near-month 台指期 card follows the stock index`)
 }
 done()
