@@ -9,6 +9,7 @@ let clock = new Date('2026-09-16T10:30:00+08:00').getTime()
 let fetches = 0
 const timers = []
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => clock, every: (ms, fn) => timers.push({ ms, fn }) },
   fs: { read: async p => (await readFile(projDir + '/' + p)).toString() },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

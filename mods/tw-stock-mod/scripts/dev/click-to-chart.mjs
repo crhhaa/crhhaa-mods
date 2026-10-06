@@ -8,6 +8,7 @@ const COLS = Number(colsArg || 120)
 
 const handlers = new Map()
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => Date.now(), every: () => {} },
   fs: { read: async p => (await readFile(projDir + '/' + p)).toString() },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

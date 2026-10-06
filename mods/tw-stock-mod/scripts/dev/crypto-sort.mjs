@@ -101,6 +101,7 @@ async function boot({ bandConfig, quotesFile, cryptoResponses = [{ status: 200, 
   let clock = 1789746167017 // matches the fixtures' own `time`, arbitrary otherwise
 
   const $ = {
+    command: { register: async () => {} },
     clock: { now: async () => clock, every: (ms, fn) => timers.push({ ms, fn }) },
     fs: {
       read: async path => {

@@ -15,6 +15,7 @@ const timers = []
 const logs = []
 
 const $ = {
+  command: { register: async () => {} },
   clock: {
     now: async () => Date.now(),
     every: (ms, fn) => timers.push({ ms, fn }),

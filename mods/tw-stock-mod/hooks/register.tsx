@@ -1,5 +1,5 @@
 /* @jsx h */
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
 // tw-stock-mod: a watchlist band above the Claude Code prompt. Taiwan trading
 // hours show the Taiwan list, US trading hours show the US list, and the
@@ -1699,6 +1699,7 @@ type BoardProps = {
   sorted: boolean
   /** 1 = single-column table, 2 = two symbols a row; see effectiveColumns() */
   columns: 1 | 2
+  quoteRows?: number
   view: View
   focus: number
   barLabel: string
@@ -1771,6 +1772,8 @@ function buildProps(
   focusCode: string | undefined,
   /** terminal width, for whether two columns fit */
   cols: number,
+  /** single-column rows a page holds; the /stock pane passes its height */
+  quoteRows?: number,
 ): BoardProps {
   const { market, phase } = pickMarket(now, mode)
   const conf = MARKETS[market]
@@ -1834,7 +1837,9 @@ function buildProps(
   // terminal rows: one page is on the board and the rest wait their turn, the
   // way a departures board shows the next five flights rather than growing.
   const columns = effectiveColumns(cfg, list.length, cols)
-  const perPage = pageSize(columns)
+  // the pane shrinks to the list rather than leaving rows of air above the footer
+  const paneRows = columns === 1 && quoteRows ? Math.min(quoteRows, Math.max(PAGE_SIZE_1COL, quotes.length)) : undefined
+  const perPage = paneRows ?? pageSize(columns)
   const pages = Math.max(1, Math.ceil(quotes.length / perPage))
   lastPageCount = pages
 
@@ -2039,6 +2044,7 @@ function buildProps(
     highlight: cfg.highlight,
     sorted: sort === 'change',
     columns,
+    quoteRows: paneRows,
     view,
     focus: focusIdx,
     barLabel: quotesFile?.barLabel ?? (usedFile ? 'K 棒' : 'K 棒（示範）'),
@@ -2132,6 +2138,12 @@ let feedInFlight = false
 let config: Config = defaultConfig()
 let modeOverride: MarketMode | undefined
 let snoozedUntil = 0
+// `/stock` moves the board out of the band into a pane (docked beside the
+// transcript in fullscreen, inline above the prompt otherwise); while it is
+// open the band draws nothing, so the two never show the same board twice.
+const PANE_ID = 'stock-band'
+const PANE_COLS = 64 // wide enough for layout()'s 46-col floor plus 量
+let paneOpen = false
 // the chart view walks the list one symbol at a time and then returns to the
 // table, so one button covers both "show me the chart" and "next symbol"
 let view: View = 'table'
@@ -2566,9 +2578,414 @@ function dispWidth(s: string): number {
 // still fits next to the session text.
 const RIGHT_BUTTON_GROUP_COLS = 40
 
+// The board's tree, shared by the band and the /stock pane; undefined until
+// the first quotes are in. `cols` is the box it draws into.
+async function drawBoard(
+  $: EngineInterface,
+  e: RenderInput<'AbovePrompt' | 'Pane', 'terminal'>,
+  cols: number,
+  quoteRows?: number,
+) {
+  const now = await $.clock.now()
+  if (!ready) return undefined
+
+  const { Box, Button, Client, Text, Select } = await $.ui.resolve(e)
+  // Capability check, not a surface-name check: terminal and desktop both
+  // resolve a Select (d.ts Elements), mobile does not (no `ui_select`
+  // message yet). The AbovePrompt guard above only ever lets `terminal`
+  // reach here today, so this reads as always-true in production - but
+  // writing it as "did the table hand out a Select" rather than
+  // `e.surface === 'terminal'` means desktop starts drawing the same
+  // dropdown the day that guard widens, with no second change needed here.
+  const canSelect = Boolean(Select)
+
+  // Snoozing used to drop the band with no way back: the only exits were
+  // waiting out the 30 minutes or restarting the session. Leave one row
+  // behind that says how long is left and brings the table back.
+  if (now < snoozedUntil) {
+    const mins = Math.max(1, Math.ceil((snoozedUntil - now) / 60_000))
+    const onWake = () => {
+      snoozedUntil = 0
+      $.ui.invalidate('ui.render')
+    }
+    // No hotkey (see the comment above the button row below for why) - this
+    // one presses by click or by focus+Enter.
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row" justifyContent="flex-end">
+          <Button key="stock-band:wake" label={`股票列 ${mins}分 展開`} onPress={onWake} />
+        </Box>
+      </Box>
+    )
+  }
+
+  const mode = modeOverride ?? config.market
+  // Every stop any of the three switcher styles can land on this render -
+  // see marketStops()'s own doc comment for why this has to be recomputed
+  // here rather than read off a module-level constant: `lastHoldingsFile`
+  // is state that changes after the module loads, so a stop list cached at
+  // load time would go stale the moment a holdings file arrives or is
+  // removed. Computed once per render and threaded through everywhere
+  // below (`select`'s options, `cycle`'s stops, `tabs`'s Buttons and width
+  // budget) rather than each call site rebuilding its own copy.
+  const stops = marketStops(config)
+  // A person can be PARKED on a pnl stop that this render's `stops` no
+  // longer includes - the holdings file was deleted, or `holdingsSource`
+  // flipped, while they were looking at it (see marketStops()'s own doc
+  // comment for what can make a stop disappear between renders). Nothing
+  // else clears `view` on its own, so a stranded pnl view would otherwise
+  // sit there forever showing the "沒有庫存資料" hint under a switcher
+  // that no longer offers a way back to it. Converging to that SAME
+  // market's table stop (not jumping markets, not resetting to `auto`)
+  // is the smallest change from what was on screen - the market itself
+  // did not go away, only its holdings did.
+  if (view === 'pnl') {
+    const curMarket = pickMarket(now, mode).market
+    const pnlStopStillExists = stops.some(s => s.market === curMarket && s.pnl)
+    if (!pnlStopStillExists) {
+      view = 'table'
+      resetPnlScroll()
+    }
+  }
+  // `cycle`'s own stop list, built off this same render's `stops` - shared
+  // by onCycle below (walking it) and the cycle-position math further down
+  // (`cyclePos`/`cycleStops.length` for the "n/total" label), so both read
+  // off the identical list rather than two `buildCycle(stops)` calls that
+  // could observe different `stops` if this ever moved between them.
+  const cycleStops = buildCycle(stops)
+  const props = buildProps(now, config, quotesFor(pickMarket(now, mode).market, now), mode, view, focusCode, cols, quoteRows)
+  // buildProps chases focusCode to whatever position it actually landed on
+  // (falling back to 0 when the code is unset, paged off, or gone from the
+  // list) - syncing it back here keeps that landing code, not a stale one,
+  // so the next onPrev/onNext step counts from the row actually on screen.
+  focusCode = props.quotes[props.focus]?.code
+
+  // the trend view is the only thing that needs K bars, so it is the only
+  // thing that asks for them; feedBars drops a request it already answered.
+  // A quotes file (永豐, 證交所) never carries bars of its own, so it asks
+  // Yahoo the same way the built-in feed does - only the demo walk skips
+  // this and draws demoBars instead (see the demoBars call below).
+  if (view === 'chart' && props.source !== 'demo' && props.quotes[props.focus]) {
+    requestBars?.(props.market, props.quotes[props.focus].code)
+  }
+
+  // Button only draws from this module's own AbovePrompt tree - a Client
+  // surface has no Button (docs/api-notes.md) - so the controls sit on their
+  // own row directly above the table.
+  //
+  // The market button walks the whole cycle (buildCycle/nextCycleStop),
+  // not just the markets - 台股 → [台股庫存] → 美股 → [美股庫存] →
+  // 加密貨幣 → 台股, marketStops()/`stops` order (a market's pnl stop only
+  // appears when it actually has holdings). This runs whenever the effective switcher
+  // style resolves to `cycle` (mobile's fallback, canSelect === false; an
+  // explicit `marketSwitcher: "cycle"`; or `tabs` too narrow to fit - see
+  // effectiveSwitcher below) - `select`/`tabs` pick the market+pnl stop
+  // directly through onSelectMarket instead, since neither has any use for
+  // a "next stop" to walk: a dropdown or a direct-target Button always
+  // jumps straight to whichever stop was picked.
+  // `market`/`view` do not change here for any stop-internal reason (the
+  // watchlist itself is unaffected by which stop is showing), so the feed
+  // gating in feedOnce (which reads modeOverride's MARKET half only) never
+  // needs to know about the pnl stops at all - see marketNeedsFeed.
+  // Bumps `turnSeq` and snapshots what was on screen (pnlPageFrom) - the
+  // pnl view's own version of the watchlist's page-turn flap
+  // (PAGE_TURN_WINDOW_MS/pageFrom), reusing the exact same turn/rowFlap
+  // machinery board.tsx already runs for the table: this only decides
+  // WHEN a turn starts, the animation itself lives entirely in board.tsx.
+  const turnPnl = () => {
+    pnlPageFrom = lastPnlShown
+    pnlPageAt = now
+    turnSeq += 1
+  }
+  const onCycle = () => {
+    const nextStop = nextCycleStop({ market: props.market, pnl: props.view === 'pnl' }, cycleStops)
+    // A market switch starts the table back at page 0: the two markets'
+    // page counts have no relation to each other, so carrying the old
+    // index over lands on whichever page the new market's remainder
+    // happens to wrap to, not "from the top" the way switching markets
+    // reads. Written directly like the chart view's focus-chase jump
+    // (see buildProps) rather than through setPage: `lastShownMarket`
+    // will already read the OLD market on this same render (buildProps
+    // has not run yet), so a setPage here would open a pageFrom/
+    // pageFromAt flap that pairs the new market's row 0 with whatever
+    // the old market last drew in that slot - the exact cross-market mix
+    // `pageFromMarket` exists to keep off the board.
+    if (nextStop.market !== props.market) page = 0
+    modeOverride = nextStop.market
+    view = nextStop.pnl ? 'pnl' : 'table'
+    resetPnlScroll() // "changing the stop" always resets the pnl scroll position
+    if (nextStop.pnl) turnPnl() // landing on a pnl stop flaps it in, like a mount
+    // the market the button just landed on may never have been fetched: ask
+    // for it now rather than showing demo prices until the next tick
+    if (!quotesFor(pickMarket(now, modeOverride).market, now)) requestFeed?.()
+    $.ui.invalidate('ui.render')
+  }
+  // The Select's onSelect: the market+pnl half of what onCycle above
+  // walks, both at once - an option's `value` packs them together (see
+  // marketSelectOptions()), so this splits it back apart rather than
+  // computing a "next stop" the way onCycle's buildCycle/nextCycleStop do.
+  // A dropdown names the destination directly, market AND view, in one
+  // pick - there is no separate holdings toggle left to press afterward.
+  // Reuses the same page-reset/pnl-reset/refetch steps onCycle already
+  // runs for a market change (see onCycle's own comments for why each one
+  // exists), so a pick behaves identically to the fallback button landing
+  // on the same stop.
+  const onSelectMarket = (value: string) => {
+    // Every value marketSelectOptions() hands out is a MarketSelectValue -
+    // see its own comment - so splitting on the literal ':pnl' suffix is
+    // exhaustive, not a guess.
+    const pnlStop = value.endsWith(':pnl')
+    const nextMarket = (pnlStop ? value.slice(0, -':pnl'.length) : value) as MarketId
+    const nextView: View = pnlStop ? 'pnl' : 'table'
+    if (nextMarket === props.market && nextView === props.view) return
+    // a market switch starts the table back at page 0, see onCycle's own
+    // comment - picking a different STOP on the same market (table <->
+    // pnl) leaves the table's own page alone, since the pnl view has no
+    // page of its own to collide with it (see holdingsScroll instead).
+    if (nextMarket !== props.market) page = 0
+    modeOverride = nextMarket
+    view = nextView
+    resetPnlScroll() // "changing the stop" always resets the pnl scroll position, same as onCycle
+    if (view === 'pnl') turnPnl() // landing on the pnl stop flaps it in, like a mount
+    if (!quotesFor(pickMarket(now, modeOverride).market, now)) requestFeed?.()
+    $.ui.invalidate('ui.render')
+  }
+  const onSnooze = () => {
+    snoozedUntil = now + SNOOZE_MS
+    $.ui.invalidate('ui.render')
+  }
+  const rowCount = props.quotes.length
+  shownCount = rowCount
+  const onPage = () => {
+    setPage((props.page + 1) % props.pageCount, now)
+    $.ui.invalidate('ui.render')
+  }
+  // One button used to do all three jobs - enter the chart, step to the next
+  // symbol, and fall back to the table on the last one - which left no way
+  // back to the symbol you just passed and no way out except walking to the
+  // end. The chart view now gets its own three buttons, and 趨勢圖 only ever
+  // opens the view.
+  const onTrend = () => {
+    view = 'chart'
+    focusCode = props.quotes[0]?.code
+    $.ui.invalidate('ui.render')
+  }
+  const step = (by: number) => () => {
+    const n = Math.max(1, rowCount)
+    const nextPos = (props.focus + by + n) % n
+    focusCode = props.quotes[nextPos]?.code
+    $.ui.invalidate('ui.render')
+  }
+  const onPrev = step(-1)
+  const onNext = step(1)
+  const onList = () => {
+    view = 'table'
+    focusCode = props.quotes[0]?.code
+    $.ui.invalidate('ui.render')
+  }
+  // Moves the scroll offset a whole PNL_PAGE_SIZE at a time, wrapping back
+  // to 0 past the last page - "paging sets the offset to page*5".
+  const holdingsPageCount = Math.max(1, Math.ceil(props.holdings.length / PNL_PAGE_SIZE))
+  const holdingsPageNum = Math.floor(props.holdingsScroll / PNL_PAGE_SIZE) + 1
+  const onHoldingsPage = () => {
+    const curPage = Math.floor(props.holdingsScroll / PNL_PAGE_SIZE)
+    pnlScroll = ((curPage + 1) % holdingsPageCount) * PNL_PAGE_SIZE
+    turnPnl() // a page move flaps the new page in, same as the watchlist's 翻頁
+    $.ui.invalidate('ui.render')
+  }
+  // Cycles the five sort keys in a fixed order (PNL_SORT_KEYS), keeping
+  // whatever direction was already set - only a header-cell click (see
+  // ui.message) flips direction, on the key it lands on.
+  const onPnlSort = () => {
+    const idx = PNL_SORT_KEYS.indexOf(pnlSortKey)
+    pnlSortKey = PNL_SORT_KEYS[(idx + 1) % PNL_SORT_KEYS.length]
+    resetPnlScroll() // "changing the sort key/direction" resets the pnl scroll position
+    turnPnl()
+    $.ui.invalidate('ui.render')
+  }
+
+  // `open` tracks the clock until the first press on whichever
+  // market-switcher style is on screen, then toggles with it.
+  const open = props.phase === 'open'
+  // Three views, three names, so every line in the button row below can
+  // read forwards: `table ? 元素 : null`, `chart ? 元素 : null`, `pnl ?
+  // 元素 : null`, never a negation that says what does NOT draw and has to
+  // be reversed in the head before it says anything.
+  const chart = props.view === 'chart'
+  const pnl = props.view === 'pnl'
+  const table = props.view === 'table'
+  // Which of the three switcher styles this render actually draws.
+  // `select` needs a real Select (canSelect) or it drops to `cycle`, the
+  // rule this already had; `tabs` needs its own five Buttons to fit next
+  // to the session state/hours and the right-side button group or it
+  // drops to `cycle` too - same direction as `select`'s fallback, so a
+  // style this environment/terminal cannot draw never fails silently into
+  // something broken, always into the one style every surface can draw.
+  // `cols` is measured up front (see its own definition above), so this
+  // check runs before anything else in the row has committed to a layout.
+  const requestedSwitcher = config.marketSwitcher
+  const tabsFit = tabsGroupWidth(stops) + RIGHT_BUTTON_GROUP_COLS <= cols
+  const switcher: MarketSwitcher =
+    requestedSwitcher === 'select' && !canSelect
+      ? 'cycle'
+      : requestedSwitcher === 'tabs' && !tabsFit
+        ? 'cycle'
+        : requestedSwitcher
+  // `cycleStops`'s own position, for `cycle`'s "n/total" label - `cycleStops`
+  // (built off this render's `stops`, see its own definition above) is
+  // recomputed every render (cheap, at most five entries) rather than
+  // cached, so a fresh stock-holdings.json or /reload-plugins changes the
+  // stops without a stale cycle surviving in closure state.
+  const cycleIdx = cycleStops.findIndex(s => s.market === props.market && s.pnl === pnl)
+  const cyclePos = (cycleIdx < 0 ? 0 : cycleIdx) + 1
+  // marketLabel is `cycle`'s own on-screen Button label when the switcher
+  // resolves there (mobile's fallback, an explicit `marketSwitcher:
+  // "cycle"`, or `tabs` collapsing for width); otherwise it is only
+  // `select`'s on-screen width proxy in the budget math right below,
+  // since there is no way to measure what the framework actually renders
+  // from inside the hook - a dropdown showing the same market name costs
+  // about the same columns as the button that used to carry it.
+  const marketLabel =
+    switcher === 'cycle'
+      ? cycleButtonLabel(props.marketLabel, pnl, cyclePos, cycleStops.length)
+      : marketButtonLabel(props.marketLabel, pnl)
+  // `tabs` swaps in its own multi-Button width instead of marketLabel's -
+  // see tabsGroupWidth's own comment for what it counts.
+  const marketControlWidth =
+    switcher === 'tabs'
+      ? tabsGroupWidth(stops)
+      : switcher === 'select'
+        ? dispWidth(MARKET_SELECT_LABEL) + SELECT_LABEL_CHROME_COLS + dispWidth(marketLabel)
+        : dispWidth(marketLabel)
+  // The Select's own `value`: crypto never reaches `pnl` (see
+  // marketStops()/onSelectMarket - there is no `crypto:pnl` stop to land
+  // on), so `props.market` alone already covers that case; tw/us fold the
+  // pnl stop into the packed `${market}:pnl` value the same way a stop's
+  // own `value` does, so the dropdown shows "美股庫存" rather than
+  // reverting to "美股" the moment 損益 is on screen. `tabs`'s own active-
+  // tab check (below) compares market/pnl directly instead of building
+  // this packed form, since it never has to round-trip through a string.
+  const marketSelectValue: MarketSelectValue = pnl && props.market !== 'crypto' ? `${props.market}:pnl` : props.market
+  // 09:30-16:00 ET answers the wrong question in Taipei, so taipeiNote
+  // restates it in local time - but only if it still fits: there is no way
+  // to measure what the framework actually renders from inside the hook, so
+  // this reserves a fixed budget for the button group on the right (see
+  // RIGHT_BUTTON_GROUP_COLS) and drops the restatement first when it does not.
+  const leftCoreWidth =
+    marketControlWidth +
+    1 + dispWidth(`${open ? SUN : MOON} ${open ? '盤中' : '休市'}`) + 1 +
+    dispWidth(props.sessionNote)
+  const showTaipei =
+    table &&
+    props.taipeiNote !== '' &&
+    leftCoreWidth + 1 + dispWidth(props.taipeiNote) + RIGHT_BUTTON_GROUP_COLS <= cols
+
+  // No hotkeys on any of these (2026-09-16, at the user's request: 先不加
+  // 上快捷鍵). A letter hotkey only fires once one of the band's Buttons
+  // already holds the focus ring (d.ts:653-658) - it buys nothing over
+  // pressing Enter once the ring is there - and a digit hotkey fires from
+  // an empty composer, which would eat a prompt that happens to start with
+  // that digit. Every button below stays pressable by click or by
+  // focus+Enter.
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" justifyContent="space-between">
+        <Box flexDirection="row">
+          {switcher === 'select' ? (
+            <Select
+              key="stock-band:market"
+              label={MARKET_SELECT_LABEL}
+              options={marketSelectOptions(stops)}
+              value={marketSelectValue}
+              onSelect={onSelectMarket}
+            />
+          ) : switcher === 'tabs' ? (
+            // One Button per stop, marketStops()/`stops` order, each jumping
+            // straight to its own stop through onSelectMarket - the same state-switch
+            // function `select` uses, not a second copy of it. The stop
+            // actually on screen draws at full strength; every other stop
+            // stays dimColor (ButtonProps.dimColor: "dim at rest ... full
+            // strength under the pointer or the focus" - the same visual
+            // vocabulary a secondary control already uses elsewhere in
+            // this engine, borrowed here for "not the current tab" rather
+            // than "secondary action"). A one-column gap Text sits between
+            // each pair, the same explicit-gap convention this row already
+            // uses for session-state/hours/taipei (see leftCoreWidth) -
+            // tabsGroupWidth's own width budget counts these same gaps.
+            stops.flatMap((stop, i) => {
+              const active = stop.market === props.market && stop.pnl === pnl
+              const btn = (
+                <Button
+                  key={`stock-band:market:${stop.value}`}
+                  label={tabLabel(stop)}
+                  dimColor={!active}
+                  onPress={() => onSelectMarket(stop.value)}
+                />
+              )
+              return i === 0 ? [btn] : [<Text key={`stock-band:market:gap:${stop.value}`}> </Text>, btn]
+            })
+          ) : (
+            <Button key="stock-band:market" label={marketLabel} onPress={onCycle} />
+          )}
+          {/* The chart view's controls sit here, next to the symbol they move
+              through, rather than stranded on the far right where the eye is
+              not. The session state and hours give up the space because the
+              chart draws its own title row with both already on it. */}
+          {chart ? <Button key="stock-band:prev" label="◀ 上一檔" onPress={onPrev} /> : null}
+          {chart ? (
+            <Button key="stock-band:next" label={`下一檔 ▶ ${props.focus + 1}/${rowCount}`} onPress={onNext} />
+          ) : null}
+          {chart ? <Button key="stock-band:list" label="回清單" onPress={onList} /> : null}
+          {table ? <Text> </Text> : null}
+          {table ? (
+            <Text color={open ? ORANGE : MOON_BLUE}>{`${open ? SUN : MOON} ${open ? '盤中' : '休市'}`}</Text>
+          ) : null}
+          {table ? <Text> </Text> : null}
+          {table ? <Text color={DIM}>{props.sessionNote}</Text> : null}
+          {showTaipei ? <Text> </Text> : null}
+          {showTaipei ? <Text color={DIM}>{props.taipeiNote}</Text> : null}
+        </Box>
+        <Box flexDirection="row">
+          {table && props.pageCount > 1 ? (
+            <Button
+              key="stock-band:page"
+              label={`翻頁 ${props.page + 1}/${props.pageCount}`}
+              onPress={onPage}
+            />
+          ) : null}
+          {pnl && holdingsPageCount > 1 ? (
+            <Button
+              key="stock-band:pnl-page"
+              label={`翻頁 ${holdingsPageNum}/${holdingsPageCount}`}
+              onPress={onHoldingsPage}
+            />
+          ) : null}
+          {table ? <Button key="stock-band:trend" label="趨勢圖" onPress={onTrend} /> : null}
+          {pnl ? (
+            <Button
+              key="stock-band:pnl-sort"
+              label={`排序 ${PNL_SORT_LABELS[props.pnlSortKey]} ${props.pnlSortDir === 'desc' ? '↓' : '↑'}`}
+              onPress={onPnlSort}
+            />
+          ) : null}
+          <Button key="stock-band:snooze" label="收起 30分" onPress={onSnooze} />
+        </Box>
+      </Box>
+      <Client
+        key="stock-band:table"
+        module="./board.tsx"
+        width={cols}
+        height={props.view === 'chart' ? CHART_BOARD_ROWS : props.view === 'pnl' ? PNL_BOARD_ROWS : TABLE_BOARD_ROWS - 5 + (props.quoteRows ?? 5)}
+        props={{ ...props }}
+      />
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
+    await $.command.register({ name: 'stock', description: '股票看板切換到側欄（再打一次切回輸入框上方）' })
 
     try {
       const manifest = JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))
@@ -3436,406 +3853,51 @@ export const register: Register = on => {
     return r
   })
 
+  on('command.run', { command: 'stock' }, async $ => {
+    if (paneOpen) {
+      await $.ui.close({ id: PANE_ID })
+      paneOpen = false
+      $.ui.invalidate('ui.render')
+      return { text: '股票側欄已關閉，看板回到輸入框上方。' }
+    }
+    paneOpen = true
+    await $.ui.open({ id: PANE_ID, title: '股票', columns: PANE_COLS })
+    $.ui.invalidate('ui.render')
+    return { text: '股票側欄已開啟（再打一次 /stock 關閉）。' }
+  })
+
+  // the person's close mark / ctrl+x x hands the board back to the band
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE_ID) {
+      paneOpen = false
+      $.ui.invalidate('ui.render')
+    }
+    return next(e)
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
+    const { Text } = await $.ui.resolve(e)
+    if (e.surface !== 'terminal') return <Text>股票看板只在終端機顯示</Text>
+    // the pane is tall: fill it with quotes instead of 5 and a lot of air.
+    // 5 rows go to the button row (wraps to 2 this narrow) and the board's
+    // header, rule and footer.
+    const quoteRows = Math.min(MAX_SYMBOLS, Math.max(5, e.props.scroll.bodyRows - 5))
+    return (await drawBoard($, e, e.props.bodyColumns, quoteRows)) ?? <Text color={DIM}>報價載入中…</Text>
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || e.surface !== 'terminal') return next(e)
-    const now = await $.clock.now()
-    if (!ready) return next(e)
-
-    const { Box, Button, Client, Text, Select } = await $.ui.resolve(e)
-    // Capability check, not a surface-name check: terminal and desktop both
-    // resolve a Select (d.ts Elements), mobile does not (no `ui_select`
-    // message yet). The AbovePrompt guard above only ever lets `terminal`
-    // reach here today, so this reads as always-true in production - but
-    // writing it as "did the table hand out a Select" rather than
-    // `e.surface === 'terminal'` means desktop starts drawing the same
-    // dropdown the day that guard widens, with no second change needed here.
-    const canSelect = Boolean(Select)
-
-    // Snoozing used to drop the band with no way back: the only exits were
-    // waiting out the 30 minutes or restarting the session. Leave one row
-    // behind that says how long is left and brings the table back.
-    if (now < snoozedUntil) {
-      const mins = Math.max(1, Math.ceil((snoozedUntil - now) / 60_000))
-      const onWake = () => {
-        snoozedUntil = 0
-        $.ui.invalidate('ui.render')
-      }
-      // No hotkey (see the comment above the button row below for why) - this
-      // one presses by click or by focus+Enter.
-      return (
-        <Box flexDirection="column">
-          <Box flexDirection="row" justifyContent="flex-end">
-            <Button key="stock-band:wake" label={`股票列 ${mins}分 展開`} onPress={onWake} />
-          </Box>
-          {await next(e)}
-        </Box>
-      )
-    }
-
-    const cols = e.viewport?.columns ?? e.props.bodyColumns ?? 80
-    const mode = modeOverride ?? config.market
-    // Every stop any of the three switcher styles can land on this render -
-    // see marketStops()'s own doc comment for why this has to be recomputed
-    // here rather than read off a module-level constant: `lastHoldingsFile`
-    // is state that changes after the module loads, so a stop list cached at
-    // load time would go stale the moment a holdings file arrives or is
-    // removed. Computed once per render and threaded through everywhere
-    // below (`select`'s options, `cycle`'s stops, `tabs`'s Buttons and width
-    // budget) rather than each call site rebuilding its own copy.
-    const stops = marketStops(config)
-    // A person can be PARKED on a pnl stop that this render's `stops` no
-    // longer includes - the holdings file was deleted, or `holdingsSource`
-    // flipped, while they were looking at it (see marketStops()'s own doc
-    // comment for what can make a stop disappear between renders). Nothing
-    // else clears `view` on its own, so a stranded pnl view would otherwise
-    // sit there forever showing the "沒有庫存資料" hint under a switcher
-    // that no longer offers a way back to it. Converging to that SAME
-    // market's table stop (not jumping markets, not resetting to `auto`)
-    // is the smallest change from what was on screen - the market itself
-    // did not go away, only its holdings did.
-    if (view === 'pnl') {
-      const curMarket = pickMarket(now, mode).market
-      const pnlStopStillExists = stops.some(s => s.market === curMarket && s.pnl)
-      if (!pnlStopStillExists) {
-        view = 'table'
-        resetPnlScroll()
-      }
-    }
-    // `cycle`'s own stop list, built off this same render's `stops` - shared
-    // by onCycle below (walking it) and the cycle-position math further down
-    // (`cyclePos`/`cycleStops.length` for the "n/total" label), so both read
-    // off the identical list rather than two `buildCycle(stops)` calls that
-    // could observe different `stops` if this ever moved between them.
-    const cycleStops = buildCycle(stops)
-    const props = buildProps(now, config, quotesFor(pickMarket(now, mode).market, now), mode, view, focusCode, cols)
-    // buildProps chases focusCode to whatever position it actually landed on
-    // (falling back to 0 when the code is unset, paged off, or gone from the
-    // list) - syncing it back here keeps that landing code, not a stale one,
-    // so the next onPrev/onNext step counts from the row actually on screen.
-    focusCode = props.quotes[props.focus]?.code
-
-    // the trend view is the only thing that needs K bars, so it is the only
-    // thing that asks for them; feedBars drops a request it already answered.
-    // A quotes file (永豐, 證交所) never carries bars of its own, so it asks
-    // Yahoo the same way the built-in feed does - only the demo walk skips
-    // this and draws demoBars instead (see the demoBars call below).
-    if (view === 'chart' && props.source !== 'demo' && props.quotes[props.focus]) {
-      requestBars?.(props.market, props.quotes[props.focus].code)
-    }
-
-    // Button only draws from this module's own AbovePrompt tree - a Client
-    // surface has no Button (docs/api-notes.md) - so the controls sit on their
-    // own row directly above the table.
-    //
-    // The market button walks the whole cycle (buildCycle/nextCycleStop),
-    // not just the markets - 台股 → [台股庫存] → 美股 → [美股庫存] →
-    // 加密貨幣 → 台股, marketStops()/`stops` order (a market's pnl stop only
-    // appears when it actually has holdings). This runs whenever the effective switcher
-    // style resolves to `cycle` (mobile's fallback, canSelect === false; an
-    // explicit `marketSwitcher: "cycle"`; or `tabs` too narrow to fit - see
-    // effectiveSwitcher below) - `select`/`tabs` pick the market+pnl stop
-    // directly through onSelectMarket instead, since neither has any use for
-    // a "next stop" to walk: a dropdown or a direct-target Button always
-    // jumps straight to whichever stop was picked.
-    // `market`/`view` do not change here for any stop-internal reason (the
-    // watchlist itself is unaffected by which stop is showing), so the feed
-    // gating in feedOnce (which reads modeOverride's MARKET half only) never
-    // needs to know about the pnl stops at all - see marketNeedsFeed.
-    // Bumps `turnSeq` and snapshots what was on screen (pnlPageFrom) - the
-    // pnl view's own version of the watchlist's page-turn flap
-    // (PAGE_TURN_WINDOW_MS/pageFrom), reusing the exact same turn/rowFlap
-    // machinery board.tsx already runs for the table: this only decides
-    // WHEN a turn starts, the animation itself lives entirely in board.tsx.
-    const turnPnl = () => {
-      pnlPageFrom = lastPnlShown
-      pnlPageAt = now
-      turnSeq += 1
-    }
-    const onCycle = () => {
-      const nextStop = nextCycleStop({ market: props.market, pnl: props.view === 'pnl' }, cycleStops)
-      // A market switch starts the table back at page 0: the two markets'
-      // page counts have no relation to each other, so carrying the old
-      // index over lands on whichever page the new market's remainder
-      // happens to wrap to, not "from the top" the way switching markets
-      // reads. Written directly like the chart view's focus-chase jump
-      // (see buildProps) rather than through setPage: `lastShownMarket`
-      // will already read the OLD market on this same render (buildProps
-      // has not run yet), so a setPage here would open a pageFrom/
-      // pageFromAt flap that pairs the new market's row 0 with whatever
-      // the old market last drew in that slot - the exact cross-market mix
-      // `pageFromMarket` exists to keep off the board.
-      if (nextStop.market !== props.market) page = 0
-      modeOverride = nextStop.market
-      view = nextStop.pnl ? 'pnl' : 'table'
-      resetPnlScroll() // "changing the stop" always resets the pnl scroll position
-      if (nextStop.pnl) turnPnl() // landing on a pnl stop flaps it in, like a mount
-      // the market the button just landed on may never have been fetched: ask
-      // for it now rather than showing demo prices until the next tick
-      if (!quotesFor(pickMarket(now, modeOverride).market, now)) requestFeed?.()
-      $.ui.invalidate('ui.render')
-    }
-    // The Select's onSelect: the market+pnl half of what onCycle above
-    // walks, both at once - an option's `value` packs them together (see
-    // marketSelectOptions()), so this splits it back apart rather than
-    // computing a "next stop" the way onCycle's buildCycle/nextCycleStop do.
-    // A dropdown names the destination directly, market AND view, in one
-    // pick - there is no separate holdings toggle left to press afterward.
-    // Reuses the same page-reset/pnl-reset/refetch steps onCycle already
-    // runs for a market change (see onCycle's own comments for why each one
-    // exists), so a pick behaves identically to the fallback button landing
-    // on the same stop.
-    const onSelectMarket = (value: string) => {
-      // Every value marketSelectOptions() hands out is a MarketSelectValue -
-      // see its own comment - so splitting on the literal ':pnl' suffix is
-      // exhaustive, not a guess.
-      const pnlStop = value.endsWith(':pnl')
-      const nextMarket = (pnlStop ? value.slice(0, -':pnl'.length) : value) as MarketId
-      const nextView: View = pnlStop ? 'pnl' : 'table'
-      if (nextMarket === props.market && nextView === props.view) return
-      // a market switch starts the table back at page 0, see onCycle's own
-      // comment - picking a different STOP on the same market (table <->
-      // pnl) leaves the table's own page alone, since the pnl view has no
-      // page of its own to collide with it (see holdingsScroll instead).
-      if (nextMarket !== props.market) page = 0
-      modeOverride = nextMarket
-      view = nextView
-      resetPnlScroll() // "changing the stop" always resets the pnl scroll position, same as onCycle
-      if (view === 'pnl') turnPnl() // landing on the pnl stop flaps it in, like a mount
-      if (!quotesFor(pickMarket(now, modeOverride).market, now)) requestFeed?.()
-      $.ui.invalidate('ui.render')
-    }
-    const onSnooze = () => {
-      snoozedUntil = now + SNOOZE_MS
-      $.ui.invalidate('ui.render')
-    }
-    const rowCount = props.quotes.length
-    shownCount = rowCount
-    const onPage = () => {
-      setPage((props.page + 1) % props.pageCount, now)
-      $.ui.invalidate('ui.render')
-    }
-    // One button used to do all three jobs - enter the chart, step to the next
-    // symbol, and fall back to the table on the last one - which left no way
-    // back to the symbol you just passed and no way out except walking to the
-    // end. The chart view now gets its own three buttons, and 趨勢圖 only ever
-    // opens the view.
-    const onTrend = () => {
-      view = 'chart'
-      focusCode = props.quotes[0]?.code
-      $.ui.invalidate('ui.render')
-    }
-    const step = (by: number) => () => {
-      const n = Math.max(1, rowCount)
-      const nextPos = (props.focus + by + n) % n
-      focusCode = props.quotes[nextPos]?.code
-      $.ui.invalidate('ui.render')
-    }
-    const onPrev = step(-1)
-    const onNext = step(1)
-    const onList = () => {
-      view = 'table'
-      focusCode = props.quotes[0]?.code
-      $.ui.invalidate('ui.render')
-    }
-    // Moves the scroll offset a whole PNL_PAGE_SIZE at a time, wrapping back
-    // to 0 past the last page - "paging sets the offset to page*5".
-    const holdingsPageCount = Math.max(1, Math.ceil(props.holdings.length / PNL_PAGE_SIZE))
-    const holdingsPageNum = Math.floor(props.holdingsScroll / PNL_PAGE_SIZE) + 1
-    const onHoldingsPage = () => {
-      const curPage = Math.floor(props.holdingsScroll / PNL_PAGE_SIZE)
-      pnlScroll = ((curPage + 1) % holdingsPageCount) * PNL_PAGE_SIZE
-      turnPnl() // a page move flaps the new page in, same as the watchlist's 翻頁
-      $.ui.invalidate('ui.render')
-    }
-    // Cycles the five sort keys in a fixed order (PNL_SORT_KEYS), keeping
-    // whatever direction was already set - only a header-cell click (see
-    // ui.message) flips direction, on the key it lands on.
-    const onPnlSort = () => {
-      const idx = PNL_SORT_KEYS.indexOf(pnlSortKey)
-      pnlSortKey = PNL_SORT_KEYS[(idx + 1) % PNL_SORT_KEYS.length]
-      resetPnlScroll() // "changing the sort key/direction" resets the pnl scroll position
-      turnPnl()
-      $.ui.invalidate('ui.render')
-    }
-
-    // `open` tracks the clock until the first press on whichever
-    // market-switcher style is on screen, then toggles with it.
-    const open = props.phase === 'open'
-    // Three views, three names, so every line in the button row below can
-    // read forwards: `table ? 元素 : null`, `chart ? 元素 : null`, `pnl ?
-    // 元素 : null`, never a negation that says what does NOT draw and has to
-    // be reversed in the head before it says anything.
-    const chart = props.view === 'chart'
-    const pnl = props.view === 'pnl'
-    const table = props.view === 'table'
-    // Which of the three switcher styles this render actually draws.
-    // `select` needs a real Select (canSelect) or it drops to `cycle`, the
-    // rule this already had; `tabs` needs its own five Buttons to fit next
-    // to the session state/hours and the right-side button group or it
-    // drops to `cycle` too - same direction as `select`'s fallback, so a
-    // style this environment/terminal cannot draw never fails silently into
-    // something broken, always into the one style every surface can draw.
-    // `cols` is measured up front (see its own definition above), so this
-    // check runs before anything else in the row has committed to a layout.
-    const requestedSwitcher = config.marketSwitcher
-    const tabsFit = tabsGroupWidth(stops) + RIGHT_BUTTON_GROUP_COLS <= cols
-    const switcher: MarketSwitcher =
-      requestedSwitcher === 'select' && !canSelect
-        ? 'cycle'
-        : requestedSwitcher === 'tabs' && !tabsFit
-          ? 'cycle'
-          : requestedSwitcher
-    // `cycleStops`'s own position, for `cycle`'s "n/total" label - `cycleStops`
-    // (built off this render's `stops`, see its own definition above) is
-    // recomputed every render (cheap, at most five entries) rather than
-    // cached, so a fresh stock-holdings.json or /reload-plugins changes the
-    // stops without a stale cycle surviving in closure state.
-    const cycleIdx = cycleStops.findIndex(s => s.market === props.market && s.pnl === pnl)
-    const cyclePos = (cycleIdx < 0 ? 0 : cycleIdx) + 1
-    // marketLabel is `cycle`'s own on-screen Button label when the switcher
-    // resolves there (mobile's fallback, an explicit `marketSwitcher:
-    // "cycle"`, or `tabs` collapsing for width); otherwise it is only
-    // `select`'s on-screen width proxy in the budget math right below,
-    // since there is no way to measure what the framework actually renders
-    // from inside the hook - a dropdown showing the same market name costs
-    // about the same columns as the button that used to carry it.
-    const marketLabel =
-      switcher === 'cycle'
-        ? cycleButtonLabel(props.marketLabel, pnl, cyclePos, cycleStops.length)
-        : marketButtonLabel(props.marketLabel, pnl)
-    // `tabs` swaps in its own multi-Button width instead of marketLabel's -
-    // see tabsGroupWidth's own comment for what it counts.
-    const marketControlWidth =
-      switcher === 'tabs'
-        ? tabsGroupWidth(stops)
-        : switcher === 'select'
-          ? dispWidth(MARKET_SELECT_LABEL) + SELECT_LABEL_CHROME_COLS + dispWidth(marketLabel)
-          : dispWidth(marketLabel)
-    // The Select's own `value`: crypto never reaches `pnl` (see
-    // marketStops()/onSelectMarket - there is no `crypto:pnl` stop to land
-    // on), so `props.market` alone already covers that case; tw/us fold the
-    // pnl stop into the packed `${market}:pnl` value the same way a stop's
-    // own `value` does, so the dropdown shows "美股庫存" rather than
-    // reverting to "美股" the moment 損益 is on screen. `tabs`'s own active-
-    // tab check (below) compares market/pnl directly instead of building
-    // this packed form, since it never has to round-trip through a string.
-    const marketSelectValue: MarketSelectValue = pnl && props.market !== 'crypto' ? `${props.market}:pnl` : props.market
-    // 09:30-16:00 ET answers the wrong question in Taipei, so taipeiNote
-    // restates it in local time - but only if it still fits: there is no way
-    // to measure what the framework actually renders from inside the hook, so
-    // this reserves a fixed budget for the button group on the right (see
-    // RIGHT_BUTTON_GROUP_COLS) and drops the restatement first when it does not.
-    const leftCoreWidth =
-      marketControlWidth +
-      1 + dispWidth(`${open ? SUN : MOON} ${open ? '盤中' : '休市'}`) + 1 +
-      dispWidth(props.sessionNote)
-    const showTaipei =
-      table &&
-      props.taipeiNote !== '' &&
-      leftCoreWidth + 1 + dispWidth(props.taipeiNote) + RIGHT_BUTTON_GROUP_COLS <= cols
-
-    // No hotkeys on any of these (2026-09-16, at the user's request: 先不加
-    // 上快捷鍵). A letter hotkey only fires once one of the band's Buttons
-    // already holds the focus ring (d.ts:653-658) - it buys nothing over
-    // pressing Enter once the ring is there - and a digit hotkey fires from
-    // an empty composer, which would eat a prompt that happens to start with
-    // that digit. Every button below stays pressable by click or by
-    // focus+Enter.
+    if (paneOpen || e.props.hasSurvey || e.surface !== 'terminal') return next(e)
+    const tree = await drawBoard($, e, e.viewport?.columns ?? e.props.bodyColumns ?? 80)
+    if (!tree) return next(e)
+    const { Box } = await $.ui.resolve(e)
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between">
-          <Box flexDirection="row">
-            {switcher === 'select' ? (
-              <Select
-                key="stock-band:market"
-                label={MARKET_SELECT_LABEL}
-                options={marketSelectOptions(stops)}
-                value={marketSelectValue}
-                onSelect={onSelectMarket}
-              />
-            ) : switcher === 'tabs' ? (
-              // One Button per stop, marketStops()/`stops` order, each jumping
-              // straight to its own stop through onSelectMarket - the same state-switch
-              // function `select` uses, not a second copy of it. The stop
-              // actually on screen draws at full strength; every other stop
-              // stays dimColor (ButtonProps.dimColor: "dim at rest ... full
-              // strength under the pointer or the focus" - the same visual
-              // vocabulary a secondary control already uses elsewhere in
-              // this engine, borrowed here for "not the current tab" rather
-              // than "secondary action"). A one-column gap Text sits between
-              // each pair, the same explicit-gap convention this row already
-              // uses for session-state/hours/taipei (see leftCoreWidth) -
-              // tabsGroupWidth's own width budget counts these same gaps.
-              stops.flatMap((stop, i) => {
-                const active = stop.market === props.market && stop.pnl === pnl
-                const btn = (
-                  <Button
-                    key={`stock-band:market:${stop.value}`}
-                    label={tabLabel(stop)}
-                    dimColor={!active}
-                    onPress={() => onSelectMarket(stop.value)}
-                  />
-                )
-                return i === 0 ? [btn] : [<Text key={`stock-band:market:gap:${stop.value}`}> </Text>, btn]
-              })
-            ) : (
-              <Button key="stock-band:market" label={marketLabel} onPress={onCycle} />
-            )}
-            {/* The chart view's controls sit here, next to the symbol they move
-                through, rather than stranded on the far right where the eye is
-                not. The session state and hours give up the space because the
-                chart draws its own title row with both already on it. */}
-            {chart ? <Button key="stock-band:prev" label="◀ 上一檔" onPress={onPrev} /> : null}
-            {chart ? (
-              <Button key="stock-band:next" label={`下一檔 ▶ ${props.focus + 1}/${rowCount}`} onPress={onNext} />
-            ) : null}
-            {chart ? <Button key="stock-band:list" label="回清單" onPress={onList} /> : null}
-            {table ? <Text> </Text> : null}
-            {table ? (
-              <Text color={open ? ORANGE : MOON_BLUE}>{`${open ? SUN : MOON} ${open ? '盤中' : '休市'}`}</Text>
-            ) : null}
-            {table ? <Text> </Text> : null}
-            {table ? <Text color={DIM}>{props.sessionNote}</Text> : null}
-            {showTaipei ? <Text> </Text> : null}
-            {showTaipei ? <Text color={DIM}>{props.taipeiNote}</Text> : null}
-          </Box>
-          <Box flexDirection="row">
-            {table && props.pageCount > 1 ? (
-              <Button
-                key="stock-band:page"
-                label={`翻頁 ${props.page + 1}/${props.pageCount}`}
-                onPress={onPage}
-              />
-            ) : null}
-            {pnl && holdingsPageCount > 1 ? (
-              <Button
-                key="stock-band:pnl-page"
-                label={`翻頁 ${holdingsPageNum}/${holdingsPageCount}`}
-                onPress={onHoldingsPage}
-              />
-            ) : null}
-            {table ? <Button key="stock-band:trend" label="趨勢圖" onPress={onTrend} /> : null}
-            {pnl ? (
-              <Button
-                key="stock-band:pnl-sort"
-                label={`排序 ${PNL_SORT_LABELS[props.pnlSortKey]} ${props.pnlSortDir === 'desc' ? '↓' : '↑'}`}
-                onPress={onPnlSort}
-              />
-            ) : null}
-            <Button key="stock-band:snooze" label="收起 30分" onPress={onSnooze} />
-          </Box>
-        </Box>
-        <Client
-          key="stock-band:table"
-          module="./board.tsx"
-          width={cols}
-          height={props.view === 'chart' ? CHART_BOARD_ROWS : props.view === 'pnl' ? PNL_BOARD_ROWS : TABLE_BOARD_ROWS}
-          props={{ ...props }}
-        />
+        {tree}
         {await next(e)}
       </Box>
     )
   })
+
 
   // Clicking a quote in the table opens its trend chart. The board hit-tests
   // the pointer (a Client has no Button) and posts the row it landed on; this

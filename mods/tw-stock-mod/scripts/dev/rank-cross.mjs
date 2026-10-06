@@ -25,6 +25,7 @@ const [, , boardPath, regPath, projDir] = process.argv
 let clock = 1789596000000
 const timers = []
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => clock, every: (ms, fn) => timers.push(fn) },
   fs: { read: async p => readFile(p.startsWith('/') ? p : `${projDir}/${p}`).then(b => b.toString()) },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

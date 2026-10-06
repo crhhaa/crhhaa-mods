@@ -23,6 +23,7 @@ const COLS = colsArg ? Number(colsArg) : 120
 const projDir = cfgPath
 const handlers = new Map()
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => Date.now(), every: () => {} },
   fs: { read: async p => readFile(new URL('file://' + projDir + '/' + p)).then(b => b.toString()) },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client', Text: 'Text' }) },

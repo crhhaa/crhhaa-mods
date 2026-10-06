@@ -20,6 +20,7 @@ const [, , regPath, boardPath, projDir] = process.argv
 
 const logs = []
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => Date.now(), every: () => {} },
   fs: { read: async p => (await readFile(projDir + '/' + p)).toString() },
   ui: { log: m => logs.push(m), invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

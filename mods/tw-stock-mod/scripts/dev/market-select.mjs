@@ -172,6 +172,7 @@ async function boot({
   let clock = 1789746167017 // matches the fixtures' own `time`, arbitrary otherwise
 
   const $ = {
+    command: { register: async () => {} },
     clock: { now: async () => clock, every: (ms, fn) => timers.push({ ms, fn }) },
     fs: {
       read: async p => { if (p in files) return files[p]; throw new Error('ENOENT ' + p) },

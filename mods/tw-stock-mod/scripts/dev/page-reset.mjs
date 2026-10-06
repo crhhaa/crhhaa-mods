@@ -8,6 +8,7 @@ const PRESS_AT = Number(pressAtMs)
 const t0 = Date.now()
 const el = () => Date.now() - t0
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => Date.now(), every: (ms, fn) => setInterval(fn, ms) },
   fs: { read: async p => (await readFile(projDir + '/' + p)).toString() },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

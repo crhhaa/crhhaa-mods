@@ -14,6 +14,7 @@ let clock = 1789624800000
 let fetches = 0
 const timers = []
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => clock, every: (ms, fn) => timers.push({ ms, fn }) },
   fs: { read: async p => (await readFile(projDir + '/' + p)).toString() },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

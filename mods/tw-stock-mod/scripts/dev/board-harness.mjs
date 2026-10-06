@@ -8,6 +8,7 @@ const [, , boardPath, regPath, cfgPath] = process.argv
 const projDir = cfgPath
 const handlers = new Map(); const timers = []
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => Date.now(), every: (ms, fn) => timers.push(fn) },
   // register.tsx reads two kinds of paths: project-relative overrides
   // (e.g. '.claude/stock-quotes.json', joined onto projDir below) and

@@ -5,6 +5,7 @@ const [, , modPath, cfgPath] = process.argv
 const cfgText = await readFile(cfgPath, 'utf8')
 const handlers = new Map(); const timers = []; const logs = []
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => Date.now(), every: (ms, fn) => timers.push({ ms, fn }) },
   fs: { read: async p => { if (p === '.claude/stock-band.json') return cfgText; throw new Error('ENOENT') } },
   ui: { log: m => logs.push(m), invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

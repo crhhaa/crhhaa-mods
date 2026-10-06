@@ -100,6 +100,8 @@ export type BoardProps = {
    * readable half (see `fitsTwoColumns`).
    */
   columns: 1 | 2
+  /** single-column quote rows; the /stock pane passes its height, the band leaves it at 5 */
+  quoteRows?: number
   /** 'table' = the watchlist, 'chart' = one symbol's K bars */
   view: View
   /** which row the chart view is showing */
@@ -1074,11 +1076,12 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
 
   const lay = layout(surface.columns || 80)
   const open = props.phase === 'open'
+  const qRows = props.columns === 2 ? TABLE_QUOTE_ROWS : (props.quoteRows ?? TABLE_QUOTE_ROWS)
   const rows = Array.from(
-    { length: props.view === 'chart' ? CHART_ROWS : props.view === 'pnl' ? PNL_ROWS : TABLE_ROWS },
+    { length: props.view === 'chart' ? CHART_ROWS : props.view === 'pnl' ? PNL_ROWS : qRows + TABLE_ROWS - TABLE_QUOTE_ROWS },
     () => new Row(),
   )
-  const quotes = props.quotes.slice(0, MAX_TABLE_QUOTES)
+  const quotes = props.quotes.slice(0, Math.max(MAX_TABLE_QUOTES, qRows))
   // the feed names itself - 證交所 延遲 and Yahoo 延遲 are not the same claim -
   // and only a source that did not say falls back to a generic label
   const sourceName =
@@ -1332,10 +1335,10 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     // the right half the rest, so the gutter between them belongs to the left
     // row rather than to nothing. A width-triggered fallback to one column
     // draws only the first five, so only those five can be picked.
-    const pickable = halves ? quotes.length : Math.min(quotes.length, TABLE_QUOTE_ROWS)
+    const pickable = halves ? quotes.length : Math.min(quotes.length, qRows)
     picker.hit = (x, y) => {
       const row = y - 2
-      if (row < 0 || row >= TABLE_QUOTE_ROWS) return undefined
+      if (row < 0 || row >= (halves ? TABLE_QUOTE_ROWS : qRows)) return undefined
       const index = halves && x > halves[0].volRight ? row + TABLE_QUOTE_ROWS : row
       return index < pickable ? { pick: index } : undefined
     }
@@ -1369,7 +1372,7 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     // width-triggered fallback to one column here must still cap itself at
     // TABLE_QUOTE_ROWS (5) rather than looping over all 10 it was handed -
     // there are only 5 single-column rows on the board to draw into.
-    const single = halves ? [] : quotes.slice(0, TABLE_QUOTE_ROWS)
+    const single = halves ? [] : quotes.slice(0, qRows)
     let topMover = 0
     for (let i = 1; i < single.length; i++) {
       if (Math.abs(single[i].pct) > Math.abs(single[topMover].pct)) topMover = i
@@ -1447,7 +1450,7 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     // one index the left side is a split-flap: the card holds, folds, and the
     // next index is there. One index (Taiwan, or a feed that answered with
     // only one) just sits still - the flip has nothing to turn to.
-    const foot = rows[7]
+    const foot = rows[qRows + 2]
     const board = props.indices.length > 0 ? props.indices : [props.index]
     // Every card side by side when the row holds them all and still leaves
     // the tail its shortest form; only a row too narrow for that flaps

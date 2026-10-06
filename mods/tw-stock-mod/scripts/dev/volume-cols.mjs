@@ -19,6 +19,7 @@ const files = {
   }),
 }
 const $ = {
+  command: { register: async () => {} },
   clock: { now: async () => Date.now(), every: () => {} },
   fs: { read: async p => { if (p in files) return files[p]; throw new Error('ENOENT ' + p) } },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },
