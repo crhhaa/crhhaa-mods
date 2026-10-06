@@ -1,6 +1,6 @@
 ---
 name: stock-quote-sources
-description: Use when the user wants to change, choose, or wire where tw-stock-mod's stock prices come from — switching the feed, connecting a broker or vendor API, or asking why a price looks stale. Trigger words include 換報價來源, 接永豐, 接群益, 接 API, 即時報價, 股價來源, 換成 Yahoo, quote source, switch feed, wire shioaji, wire capital, SKCOM, real-time quotes.
+description: Use when the user wants to change where tw-stock-mod's stock prices come from (換報價來源, 接永豐/群益 or another broker/vendor API) or asks why a price looks stale.
 ---
 
 # Wiring tw-stock-mod's quote sources
@@ -30,7 +30,8 @@ only, set `"twSources": ["yahoo"]` in `<project>/.claude/stock-band.json`.
 
 **永豐 Shioaji, managed by the band.** Put `SINOBON_API_KEY`/`SINOBON_SECRET_KEY`
 in an env file outside the repo, and set `~/.claude/stock-band.json` (NOT the
-project's - see the note above) to:
+project's - see "Preference order and the user-level file" in the
+reference) to:
 
 ```json
 "twSources": ["shioaji", "yahoo"],
