@@ -33,6 +33,7 @@ for (const [label, now, wantType] of cases) {
   const timers = []
   const $ = {
     command: { register: async () => {} },
+    store: { get: async () => undefined, set: async () => {} },
     clock: { now: async () => now, every: (ms, fn) => timers.push(fn) },
     fs: { read: async p => { if (p === '.claude/stock-band.json') return config; throw new Error('ENOENT') } },
     ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

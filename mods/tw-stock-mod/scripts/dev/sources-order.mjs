@@ -37,6 +37,7 @@ async function runCase(label, { userText, projectText, quotesText, homeVar = 'HO
   const processRuns = []
   const $ = {
     command: { register: async () => {} },
+    store: { get: async () => undefined, set: async () => {} },
     clock: { now: async () => Date.now(), every: () => {} },
     fs: {
       read: async path => {

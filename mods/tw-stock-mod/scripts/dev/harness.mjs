@@ -16,6 +16,7 @@ const logs = []
 
 const $ = {
   command: { register: async () => {} },
+  store: { get: async () => undefined, set: async () => {} },
   clock: {
     now: async () => Date.now(),
     every: (ms, fn) => timers.push({ ms, fn }),

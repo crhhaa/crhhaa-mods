@@ -2143,6 +2143,11 @@ let snoozedUntil = 0
 // open the band draws nothing, so the two never show the same board twice.
 const PANE_ID = 'stock-band'
 const PANE_COLS = 64 // wide enough for layout()'s 46-col floor plus 量
+// $.store key: the pane was up when the person last left it, so the next
+// session opens it unasked (the engine seats that from 110 columns)
+const PANE_STORE_KEY = 'paneOpen'
+// true once the pane has actually drawn - an unasked open on a narrow
+// terminal waits undrawn, and the band must not step aside for that
 let paneOpen = false
 // the chart view walks the list one symbol at a time and then returns to the
 // table, so one button covers both "show me the chart" and "next symbol"
@@ -2986,6 +2991,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await $.command.register({ name: 'stock', description: '股票看板切換到側欄（再打一次切回輸入框上方）' })
+    if ((await $.store.get(PANE_STORE_KEY)) === true) void $.ui.open({ id: PANE_ID, title: '股票', columns: PANE_COLS })
 
     try {
       const manifest = JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))
@@ -3857,12 +3863,12 @@ export const register: Register = on => {
     if (paneOpen) {
       await $.ui.close({ id: PANE_ID })
       paneOpen = false
+      await $.store.set(PANE_STORE_KEY, false)
       $.ui.invalidate('ui.render')
       return { text: '股票側欄已關閉，看板回到輸入框上方。' }
     }
-    paneOpen = true
     await $.ui.open({ id: PANE_ID, title: '股票', columns: PANE_COLS })
-    $.ui.invalidate('ui.render')
+    await $.store.set(PANE_STORE_KEY, true)
     return { text: '股票側欄已開啟（再打一次 /stock 關閉）。' }
   })
 
@@ -3870,6 +3876,8 @@ export const register: Register = on => {
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE_ID) {
       paneOpen = false
+      // closed by hand: stay closed next session too (an unload is a reload, not a choice)
+      if (e.origin.kind === 'person') await $.store.set(PANE_STORE_KEY, false)
       $.ui.invalidate('ui.render')
     }
     return next(e)
@@ -3877,6 +3885,10 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const { Text } = await $.ui.resolve(e)
+    if (!paneOpen) {
+      paneOpen = true // drawn now, so the band steps aside
+      $.ui.invalidate('ui.render')
+    }
     if (e.surface !== 'terminal') return <Text>股票看板只在終端機顯示</Text>
     // the pane is tall: fill it with quotes instead of 5 and a lot of air.
     // 5 rows go to the button row (wraps to 2 this narrow) and the board's

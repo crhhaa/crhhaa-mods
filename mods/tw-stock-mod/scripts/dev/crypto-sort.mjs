@@ -102,6 +102,7 @@ async function boot({ bandConfig, quotesFile, cryptoResponses = [{ status: 200, 
 
   const $ = {
     command: { register: async () => {} },
+    store: { get: async () => undefined, set: async () => {} },
     clock: { now: async () => clock, every: (ms, fn) => timers.push({ ms, fn }) },
     fs: {
       read: async path => {

@@ -173,6 +173,7 @@ async function boot({
 
   const $ = {
     command: { register: async () => {} },
+    store: { get: async () => undefined, set: async () => {} },
     clock: { now: async () => clock, every: (ms, fn) => timers.push({ ms, fn }) },
     fs: {
       read: async p => { if (p in files) return files[p]; throw new Error('ENOENT ' + p) },

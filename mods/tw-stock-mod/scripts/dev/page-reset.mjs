@@ -9,6 +9,7 @@ const t0 = Date.now()
 const el = () => Date.now() - t0
 const $ = {
   command: { register: async () => {} },
+  store: { get: async () => undefined, set: async () => {} },
   clock: { now: async () => Date.now(), every: (ms, fn) => setInterval(fn, ms) },
   fs: { read: async p => (await readFile(projDir + '/' + p)).toString() },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

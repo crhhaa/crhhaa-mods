@@ -10,6 +10,7 @@ const RUN_MS = Number(seconds ?? 15) * 1000
 const handlers = new Map()
 const $ = {
   command: { register: async () => {} },
+  store: { get: async () => undefined, set: async () => {} },
   clock: { now: async () => Date.now(), every: (ms, fn) => setInterval(fn, ms) },
   fs: { read: async p => (await readFile(projDir + '/' + p)).toString() },
   ui: { log: m => console.log('LOG', m), invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client' }) },

@@ -24,6 +24,7 @@ const projDir = cfgPath
 const handlers = new Map()
 const $ = {
   command: { register: async () => {} },
+  store: { get: async () => undefined, set: async () => {} },
   clock: { now: async () => Date.now(), every: () => {} },
   fs: { read: async p => readFile(new URL('file://' + projDir + '/' + p)).then(b => b.toString()) },
   ui: { log: () => {}, invalidate: () => {}, resolve: async () => ({ Box: 'Box', Button: 'Button', Client: 'Client', Text: 'Text' }) },

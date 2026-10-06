@@ -108,6 +108,7 @@ async function boot(responses) {
 
   const $ = {
     command: { register: async () => {} },
+    store: { get: async () => undefined, set: async () => {} },
     clock: {
       now: async () => clock,
       every: (ms, fn) => timers.push({ ms, fn }),
