@@ -105,6 +105,11 @@ const DEMO_BAR_MS = 3000 // demo time per fake bar; a real feed sets its own
 // for the one symbol it is drawing.
 const FEED_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
 const FEED_MS_DEFAULT = 30_000
+// 斷網（DNS 查不到、連不上）每輪都會丟錯，不印 log，等網路回來自己會好
+const OFFLINE_RE = /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH/
+const logUnlessOffline = ($: EngineInterface, msg: string, err: unknown) => {
+  if (!OFFLINE_RE.test(String(err))) $.ui.log(`${msg}: ${err}`)
+}
 const FEED_MS_MIN = 15_000 // a floor, so a bad config cannot get the host banned
 const FEED_BACKOFF_MAX_MS = 300_000
 const BARS_MAX_AGE_MS = 120_000 // a 5-minute bar refetched sooner than this says nothing new
@@ -3114,9 +3119,9 @@ export const register: Register = on => {
     // once immediately so the band is there on the first prompt, then on the
     // refresh interval the config asked for. The interval is fixed for the
     // session: changing refreshMs later needs /reload-plugins.
-    await poll().catch(err => $.ui.log(`tw-stock-mod: poll failed: ${err}`))
+    await poll().catch(err => logUnlessOffline($, 'tw-stock-mod: poll failed', err))
     $.clock.every(config.refreshMs, () => {
-      poll().catch(err => $.ui.log(`tw-stock-mod: poll failed: ${err}`))
+      poll().catch(err => logUnlessOffline($, 'tw-stock-mod: poll failed', err))
     })
 
     // A failed request must never become a made-up price: the feed keeps the
@@ -3864,11 +3869,11 @@ export const register: Register = on => {
     }
 
     requestBars = (market, code) => {
-      feedBars(market, code).catch(err => $.ui.log(`tw-stock-mod: K 棒 failed: ${err}`))
+      feedBars(market, code).catch(err => logUnlessOffline($, 'tw-stock-mod: K 棒 failed', err))
     }
 
     requestFeed = () => {
-      feed().catch(err => $.ui.log(`tw-stock-mod: feed failed: ${err}`))
+      feed().catch(err => logUnlessOffline($, 'tw-stock-mod: feed failed', err))
     }
 
     if (config.feed !== 'off') {
@@ -3880,9 +3885,9 @@ export const register: Register = on => {
             `(budget ${REQUESTS_PER_HOUR}/hour)`,
         )
       }
-      await feed().catch(err => $.ui.log(`tw-stock-mod: feed failed: ${err}`))
+      await feed().catch(err => logUnlessOffline($, 'tw-stock-mod: feed failed', err))
       $.clock.every(every, () => {
-        feed().catch(err => $.ui.log(`tw-stock-mod: feed failed: ${err}`))
+        feed().catch(err => logUnlessOffline($, 'tw-stock-mod: feed failed', err))
       })
     }
 

@@ -74,6 +74,8 @@ export const register: Register = on => {
         idx = 0
         $.ui.invalidate('ui.render')
       } catch (err) {
+        // 斷網（DNS 查不到、連不上）不印 log，下一輪自己會再抓
+        if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH/.test(String(err))) return
         $.ui.log(`ai-news-ticker: ${err}`)
       }
     }

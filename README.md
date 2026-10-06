@@ -3,7 +3,15 @@
 在 Claude Code 輸入框上方放一條**股票看板**：台股時段顯示台股、美股時段顯示美股，紅漲綠跌（台股）／綠漲紅跌（美股），價格自動更新（台股延遲數秒到 30 秒左右，詳見[報價來源](#4-報價來源)），不花任何模型 token。
 
 > 本專案 fork 自 [darrell-tw/darrelltw-mods](https://github.com/darrell-tw/darrelltw-mods)（MIT 授權），原作者 Darrell Wang。
-> 這個版本多了：雙欄也顯示**漲跌金額（變更$）**與**成交量（量）**、台股預設走**證交所 MIS 報價**（不用帳號，延遲只有幾秒到 30 秒，Yahoo 則是 20 分鐘）。
+> 這個版本多了：雙欄也顯示**漲跌金額（變更$）**與**成交量（量）**、台股預設走**證交所 MIS 報價**（不用帳號，延遲只有幾秒到 30 秒，Yahoo 則是 20 分鐘）、`/stock` **側欄模式**，以及兩個新 mod。
+
+這個 repo 有三個 mod，可以分開裝：
+
+| mod | 做什麼 |
+| --- | --- |
+| `tw-stock-mod` | 股票看板（本文第 1～6 節） |
+| `ai-news-ticker` | AI 新聞跑馬燈，見[第 7 節](#7-ai-新聞跑馬燈ai-news-ticker) |
+| `token-usage` | token 用量卡，畫在 `/stock` 側欄，見[第 8 節](#8-token-用量token-usage) |
 
 ```
  台股 ▾  ☀ 盤中 09:00-13:30                                     [趨勢圖] [收起 30分]
@@ -42,6 +50,10 @@
 ```sh
 claude plugin marketplace add crhhaa/crhhaa-mods
 claude plugin install tw-stock-mod@crhhaa-mods --scope user
+
+# 選用
+claude plugin install ai-news-ticker@crhhaa-mods --scope user
+claude plugin install token-usage@crhhaa-mods --scope user
 ```
 
 **③ 完全關掉 Claude Code 再重開**，輸入框上方就會出現看板。
@@ -224,12 +236,9 @@ claude plugin install tw-stock-mod@crhhaa-mods --scope user
 
 > 註：看板預設每 10 秒向永豐取一次快照（可以調整），所以畫面上不會每一筆成交都跳動，但資料本身是即時的，不會像 MIS 那樣多一層網頁更新的延遲。
 
---- | --- | --- |
-| 台股 | 證交所 MIS（即時）。MIS 沒回應時自動改用 Yahoo（延遲約 20 分鐘），footer 會顯示 `Yahoo 延遲` | 約 30 秒 |
-| 美股 | Yahoo | 約 30 秒 |
-| 加密貨幣 | Pionex | 約 30 秒 |
+### 斷網的時候
 
-想要逐筆即時，可以接永豐（Shioaji，macOS／Linux）或群益（Windows）的券商 API，需要有該券商帳戶。詳見 [tw-stock-mod 的英文文件](mods/tw-stock-mod/README.md#the-live-feed)，或在 Claude Code 裡問「怎麼接永豐」。
+抓不到報價時，看板會保留最後一次的價格，過一陣子改顯示 `示範資料`，網路回來後自動恢復。斷網類的錯誤（DNS 查不到、連不上）**不會在對話裡印 log**，其他錯誤（例如 HTTP 429）還是會顯示。
 
 ---
 
@@ -251,13 +260,76 @@ claude plugin install tw-stock-mod@crhhaa-mods --scope user
 
 ---
 
-## 6. 更新與移除
+## 6. 側欄模式（`/stock`）
+
+在 Claude Code 裡輸入 `/stock`，看板會從輸入框上方移到對話旁邊的側欄；再輸入一次 `/stock`（或按側欄的關閉）就移回輸入框上方。
+
+- 側欄會依高度一頁排滿自選股，不用一直翻頁
+- 開關狀態會記住，下次開 Claude Code 會自動打開側欄
+- 有裝 `ai-news-ticker`、`token-usage` 的話，它們會疊在側欄裡：
+
+```
+┌ 股票 ──────────────────────┐
+│ AI 新聞卡（ai-news-ticker） │
+│ TOKEN USAGE（token-usage）  │
+│ 股票看板                    │
+└────────────────────────────┘
+```
+
+---
+
+## 7. AI 新聞跑馬燈（ai-news-ticker）
+
+每 15 分鐘抓一次 Google 新聞的 AI 新聞（近 24 小時、繁中），每 20 秒換一則，可以按按鈕在瀏覽器開啟原文。
+
+- `/stock` 側欄開著：畫在側欄最上面
+- 側欄沒開：畫在輸入框上方
+
+不用帳號、不用設定。
+
+---
+
+## 8. token 用量（token-usage）
+
+在 `/stock` 側欄的看板上方畫一張用量卡，**只在側欄開著時顯示**：
+
+```
+TOKEN USAGE                                    13:05
+▶ claude    5h  ●●○○○○○○○○  18% @ 17:00  3h55m
+            7d  ●○○○○○○○○○   9% @ 10/13 06:00  6d17h
+            ctx ●●●○○○○○○○  31%  62k/200k  $1.20
+  claude-b  5h  ●●●●●●●○○○  72% @ 15:30  2h25m
+            7d  ●●●○○○○○○○  30% @ 10/11 22:00  5d9h
+```
+
+（示意圖，數字為虛構）
+
+| 行 | 意思 |
+| --- | --- |
+| `5h`／`7d` | 5 小時、7 天額度用了幾 %，`@` 後面是重置時間，最後是倒數 |
+| `ctx` | 這個對話的 context 用量，後面是花費（有的話） |
+
+顏色：90% 以上紅、70% 以上亮黃，其他是黃色。
+
+**數字從哪來、誰看得到：**
+
+- 數字跟 Claude Code 狀態列是同一份（Claude Code 本機提供），**不打任何 API、不連網**
+- 只存在你自己電腦的 `~/.claude/token-usage/`，不會進 repo，別人裝這個 mod 只會看到**他自己的**用量
+- 唯一會「被看到」的情況是你分享螢幕或截圖時，側欄正好開著
+
+**多個帳號：** 如果你用 `CLAUDE_CONFIG_DIR` 開第二個帳號（例如 `~/.claude-b`），兩邊各裝一份，卡片會把兩個帳號都列出來，目前這個 Claude 用的那個標橘色 `▶`。
+
+---
+
+## 9. 更新與移除
 
 **更新到最新版：**
 
 ```sh
 claude plugin marketplace update crhhaa-mods
 claude plugin update tw-stock-mod@crhhaa-mods
+claude plugin update ai-news-ticker@crhhaa-mods   # 有裝才需要
+claude plugin update token-usage@crhhaa-mods      # 有裝才需要
 ```
 
 更新完要重開 Claude Code，看 footer 的版本號有沒有變。
@@ -266,12 +338,14 @@ claude plugin update tw-stock-mod@crhhaa-mods
 
 ```sh
 claude plugin uninstall tw-stock-mod@crhhaa-mods --scope user
+claude plugin uninstall ai-news-ticker@crhhaa-mods --scope user
+claude plugin uninstall token-usage@crhhaa-mods --scope user
 claude plugin marketplace remove crhhaa-mods
 ```
 
 ---
 
-## 7. 看不到看板？
+## 10. 看不到看板？
 
 依序檢查這四項（它們的症狀一模一樣：沒有看板，也沒有任何錯誤訊息）：
 
@@ -292,7 +366,11 @@ mods/tw-stock-mod/                股票看板本體
   hooks/board.tsx                 畫面：表格版面
   scripts/dev/run-checks.sh       全部檢查，改完跑一次
   README.md                       完整技術文件（英文，原作者撰寫）
+mods/ai-news-ticker/hooks/        AI 新聞跑馬燈
+mods/token-usage/hooks/           token 用量卡
 ```
+
+每個 mod 的版本號都在自己的 `.claude-plugin/plugin.json`。`hooks/register.test.ts` 要在 Claude Code 的測試環境（`claude-code/testing`）裡跑，直接用 `bun test` 會找不到模組。
 
 ```sh
 bash mods/tw-stock-mod/scripts/dev/run-checks.sh   # 全部要 PASS
