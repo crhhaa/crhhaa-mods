@@ -1,1 +1,1 @@
-{ "name": "token-usage", "version": "0.1.0", "description": "token 用量：Context、5h／7d 額度、花費，畫在 /stock 側欄的看板上方。零模型 token。", "author": { "name": "crhhaa" } }
+{ "name": "token-usage", "version": "0.2.0", "description": "token 用量：Context、5h／7d 額度、花費，畫在 /stock 側欄的看板上方；側欄關著時，附的 statusline.mjs 在狀態列印成一行（多個帳號一起列）。零模型 token。", "author": { "name": "crhhaa" } }

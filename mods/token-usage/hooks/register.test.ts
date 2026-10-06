@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { accountName, color, contextSeg, countdown, dots, resetAt, windows } from './register.tsx'
+import { accountName, color, contextSeg, countdown, dots, resetAt, windows } from './register'
 
 test('windows: dots, reset clock, countdown, and a passed reset reads 0%', () => {
   const now = new Date(2026, 9, 6, 8, 0).getTime() // 本機時間 10/6 08:00
@@ -23,7 +23,7 @@ test('windows: dots, reset clock, countdown, and a passed reset reads 0%', () =>
   expect(dots(50)).toEqual(['●●●●●', '○○○○○'])
   expect(dots(120)).toEqual(['●●●●●●●●●●', ''])
   expect(color(72)).toBe('yellow')
-  expect(color(11)).toBe('#c9b27c')
+  expect(color(11)).toBe('#b1b9f9')
   expect(contextSeg({ context: { tokens: 90_000, window: 200_000, percent: 45 }, rateLimits: [] })).toEqual({
     label: 'ctx', pct: 45, at: '', left: '90k/200k',
   })

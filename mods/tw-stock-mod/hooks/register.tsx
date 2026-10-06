@@ -837,6 +837,8 @@ type Config = {
   holdingsSource: 'file' | 'config'
   /** which of the three market-switch control styles the band draws; default `'select'` - see MarketSwitcher's own comment */
   marketSwitcher: MarketSwitcher
+  /** `false`: no board above the prompt - it shows only in the /stock pane; default `true` */
+  band: boolean
 }
 
 type ShioajiConfig = {
@@ -965,6 +967,7 @@ function defaultConfig(): Config {
     // `cycle` for a narrow one - and `cycle` is what `select` falls back to
     // wherever the surface has no Select element (mobile). See MarketSwitcher.
     marketSwitcher: 'select',
+    band: true,
   }
 }
 
@@ -1156,6 +1159,7 @@ function parseConfigRoot(root: Record<string, unknown> | undefined): Config {
   if (marketSwitcher === 'tabs' || marketSwitcher === 'select' || marketSwitcher === 'cycle') {
     cfg.marketSwitcher = marketSwitcher
   } // anything else (including the default '貓'-style typo) keeps defaultConfig()'s 'select'
+  if (root.band === false) cfg.band = false
   return cfg
 }
 
@@ -2155,6 +2159,24 @@ const PANE_STORE_KEY = 'paneOpen'
 // true once the pane has actually drawn - an unasked open on a narrow
 // terminal waits undrawn, and the band must not step aside for that
 let paneOpen = false
+
+// for the status line (statusline-combined.sh): is this session's pane up?
+// ~/.claude/stock-band/pane/<session id> holds 1 or 0. The status line hides
+// its Context/Usage while it reads 1, since token-usage draws them in the pane.
+// Writes queue up and each one writes the LATEST state, so a slow write from
+// a reload's session.start cannot land after the pane's own and flip it back.
+let markOpen = false
+let marking: Promise<void> = Promise.resolve()
+function markPane($: EngineInterface, open: boolean) {
+  markOpen = open
+  marking = marking.then(async () => {
+    try {
+      const home = (await $.env.get('HOME')) ?? ''
+      await $.fs.write(`${home}/.claude/stock-band/pane/${await $.session.id()}`, markOpen ? '1' : '0')
+    } catch {} // the dev harnesses stub neither; unwritten just means the status line shows both
+  })
+  return marking
+}
 // the chart view walks the list one symbol at a time and then returns to the
 // table, so one button covers both "show me the chart" and "next symbol"
 let view: View = 'table'
@@ -2593,7 +2615,7 @@ const RIGHT_BUTTON_GROUP_COLS = 40
 // and land above the board. A Box keyed `top:...` (ai-news-ticker) is pulled
 // to the very top, ahead of the rest (token-usage), whichever order the
 // engine nests the plugins in beneath this one. A Box keyed `bottom:...`
-// (swarm-card) goes below the board, and its `height` is taken off the
+// (change-card) goes below the board, and its `height` is taken off the
 // board's rows so it stays on screen. Trees are plain data
 // ({ type, props, children }), so this is a walk.
 // ponytail: only sorts what runs beneath this hook; a plugin wrapping it from
@@ -3035,6 +3057,10 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await $.command.register({ name: 'stock', description: '股票看板切換到側欄（再打一次切回輸入框上方）' })
+    // a resumed session keeps its id, and a reload keeps the pane up: ask the
+    // engine (its record outlives the module) instead of assuming closed
+    const up = await (async () => (await $.ui.panes()).some(p => p.id === PANE_ID && p.isPlaced))().catch(() => false)
+    await markPane($, up)
     if ((await $.store.get(PANE_STORE_KEY)) === true) void $.ui.open({ id: PANE_ID, title: '股票', columns: PANE_COLS })
 
     try {
@@ -3907,11 +3933,14 @@ export const register: Register = on => {
     if (paneOpen) {
       await $.ui.close({ id: PANE_ID })
       paneOpen = false
+      // awaited: the status line redraws on this command's reply, so the mark must be down first
+      await markPane($, false)
       await $.store.set(PANE_STORE_KEY, false)
       $.ui.invalidate('ui.render')
-      return { text: '股票側欄已關閉，看板回到輸入框上方。' }
+      return { text: config.band ? '股票側欄已關閉，看板回到輸入框上方。' : '股票側欄已關閉。' }
     }
     await $.ui.open({ id: PANE_ID, title: '股票', columns: PANE_COLS })
+    await markPane($, true) // asked, so it is placed: mark it before the reply redraws the status line
     await $.store.set(PANE_STORE_KEY, true)
     return { text: '股票側欄已開啟（再打一次 /stock 關閉）。' }
   })
@@ -3920,6 +3949,7 @@ export const register: Register = on => {
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE_ID) {
       paneOpen = false
+      void markPane($, false)
       // closed by hand: stay closed next session too (an unload is a reload, not a choice)
       if (e.origin.kind === 'person') await $.store.set(PANE_STORE_KEY, false)
       $.ui.invalidate('ui.render')
@@ -3931,6 +3961,7 @@ export const register: Register = on => {
     const { Box, Text } = await $.ui.resolve(e)
     if (!paneOpen) {
       paneOpen = true // drawn now, so the band steps aside
+      void markPane($, true)
       $.ui.invalidate('ui.render')
     }
     if (e.surface !== 'terminal') return <Text>股票看板只在終端機顯示</Text>
@@ -3951,7 +3982,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (paneOpen || e.props.hasSurvey || e.surface !== 'terminal') return next(e)
+    if (paneOpen || !config.band || e.props.hasSurvey || e.surface !== 'terminal') return next(e)
     const tree = await drawBoard($, e, e.viewport?.columns ?? e.props.bodyColumns ?? 80)
     if (!tree) return next(e)
     const { Box } = await $.ui.resolve(e)

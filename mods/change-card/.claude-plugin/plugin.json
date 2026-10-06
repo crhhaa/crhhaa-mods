@@ -1,0 +1,1 @@
+{ "name": "change-card", "version": "0.1.0", "description": "改動卡：這個 session 裡 Claude（主對話＋子代理）改了哪些檔、子代理有沒有卡住。/stock 側欄看板下方一行，按下去看紅綠 diff。子代理部分改自 OneWave-AI 的 swarm。零模型 token。", "author": { "name": "crhhaa" } }

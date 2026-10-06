@@ -44,6 +44,7 @@ const MORANDI = '#c9b27c'
 let items: Item[] = []
 let idx = 0
 let inPane = false // 側欄畫過新聞卡：輸入框上方那條就收起來
+let band = true // ~/.claude/stock-band.json 寫 "band": false：側欄關著時輸入框上方也不畫（跟 tw-stock-mod 的看板同一個開關）
 
 function step($: EngineInterface, d: number) {
   idx = (idx + d + items.length) % items.length
@@ -60,9 +61,17 @@ async function openLink($: EngineInterface, href: string) {
   }
 }
 
+// ponytail: 只讀使用者層級那份；專案的 .claude/stock-band.json 寫 band 不會影響新聞
+async function readBand($: EngineInterface) {
+  try {
+    band = JSON.parse(await $.fs.read(`${(await $.env.get('HOME')) ?? ''}/.claude/stock-band.json`)).band !== false
+  } catch {} // 沒有這個檔或格式不對：照舊畫
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
+    await readBand($)
 
     const refresh = async () => {
       try {
@@ -134,7 +143,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const item = items[idx]
-    if (inPane || e.props.hasSurvey || !item) return next(e)
+    if (inPane || !band || e.props.hasSurvey || !item) return next(e)
 
     const { Box, Button, Link, Text } = $.ui.resolve(e)
     const href = new URL(item.link).href

@@ -35,6 +35,13 @@ if ! (cd "$MOD_DIR" && bunx esbuild hooks/board.tsx --bundle --format=esm --jsx-
   exit 1
 fi
 
+# The harnesses read ~/.claude/stock-band.json through $HOME like the real
+# band does, so the developer's own settings (e.g. "band": false) would leak
+# into every check. Past the build (bunx wants the real cache), run them
+# against an empty home.
+export HOME="$FIXTURES/home"
+mkdir -p "$HOME"
+
 # --- fixtures ----------------------------------------------------------
 # feed-idle: real network, real live feed - one TW code keeps the request
 # budget small. The harness itself drives a fixed, already-closed clock, so

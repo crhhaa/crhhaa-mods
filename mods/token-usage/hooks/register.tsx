@@ -3,12 +3,12 @@ import type { EngineInterface, Register, SessionRateLimit, SessionUsage } from '
 // token 用量卡，畫在 /stock 側欄看板上方。數字跟狀態列同一份（$.session.usage()，不打 API）。
 // 兩個帳號（~/.claude、~/.claude-b）各跑一份這個 mod：各自把 5h/7d 寫進共用資料夾，
 // 再把資料夾裡每個帳號都畫出來，目前這個 Claude 用的那個標橘色 ▶。
+// 側欄關著時改由狀態列顯示：../statusline.mjs 讀同一個資料夾（tw-stock-mod 寫側欄開關記號）。
 const PANE_ID = 'stock-band' // tw-stock-mod 的側欄 id
 const SHARED_DIR = '.claude/token-usage' // 在 $HOME 底下
 const TICK_MS = 60_000 // 倒數一分鐘跳一次，順便讀別的帳號
 const DOTS = 10
-const ACCENT = '#d97757'
-const MORANDI = '#c9b27c' // 莫蘭迪黃：標題和正常用量
+const BAR = '#b1b9f9' // 淡紫：卡片主色（標題、目前帳號、長條和正常用量的 %）
 
 type Usage = Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>
 export type Account = { name: string; rateLimits: SessionRateLimit[] }
@@ -32,8 +32,8 @@ export function countdown(iso: string, now: number) {
   return d ? `${d}d${h}h` : `${h}h${m}m`
 }
 
-// ≥90 紅、≥70 亮黃、其他莫蘭迪黃
-export const color = (pct: number) => (pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : MORANDI)
+// ≥90 紅、≥70 亮黃、其他淡紫
+export const color = (pct: number) => (pct >= 90 ? 'red' : pct >= 70 ? 'yellow' : BAR)
 
 export const dots = (pct: number) => {
   const n = Math.min(DOTS, Math.max(0, Math.round((pct / 100) * DOTS)))
@@ -54,7 +54,7 @@ export function windows(rateLimits: SessionRateLimit[], now: number): Seg[] {
   })
 }
 
-// 第一次回覆之前引擎還沒有 percent：當 0% 畫，這一行一直都在（狀態列的 Context 已關掉）
+// 第一次回覆之前引擎還沒有 percent：當 0% 畫，這一行一直都在（側欄開著時狀態列的 Context 會收起來）
 export function contextSeg(u: Usage): Seg {
   const c = u.context
   return { label: 'ctx', pct: c.percent ?? 0, at: '', left: `${k(c.tokens ?? 0)}/${k(c.window)}` }
@@ -66,12 +66,13 @@ let usage: Usage | undefined
 let accounts: Account[] = []
 
 async function save($: EngineInterface) {
-  if (!usage || usage.rateLimits.length === 0) return
+  if (!dir || !usage || usage.rateLimits.length === 0) return // session.measure 可能比 session.start 先到
   const mine: Account = { name: me, rateLimits: usage.rateLimits }
   await $.fs.write(`${dir}/${me}.json`, JSON.stringify(mine))
 }
 
 async function load($: EngineInterface) {
+  if (!dir) return // 同上：還沒設好就會去讀工作目錄的 .json
   const got: Account[] = []
   try {
     for (const f of await $.fs.list(dir)) {
@@ -132,7 +133,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
           <Box flexDirection="row" justifyContent="space-between">
-            <Text color={MORANDI} bold>TOKEN USAGE</Text>
+            <Text color={BAR} bold>TOKEN USAGE</Text>
             <Text dimColor>{hhmm(new Date(now))}</Text>
           </Box>
           {accounts.map(a => {
@@ -140,19 +141,19 @@ export const register: Register = on => {
             return (
               <Box key={a.name} flexDirection="row">
                 {isMe ? (
-                  <Text color={ACCENT} bold>▶ {a.name.padEnd(width)} </Text>
+                  <Text color={BAR} bold>▶ {a.name.padEnd(width)} </Text>
                 ) : (
                   <Text dimColor>{'  '}{a.name.padEnd(width)} </Text>
                 )}
                 <Box flexDirection="column">
-                  {windows(a.rateLimits, now).map(row)}
-                  {/* context 是這個對話自己的，接在自己帳號底下 */}
+                  {/* context 是這個對話自己的，放在自己帳號的第一行 */}
                   {isMe && ctx ? (
                     <Text>
                       {row(ctx)}
                       {cost ? <Text dimColor>  {cost}</Text> : null}
                     </Text>
                   ) : null}
+                  {windows(a.rateLimits, now).map(row)}
                 </Box>
               </Box>
             )

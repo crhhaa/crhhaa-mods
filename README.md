@@ -5,13 +5,14 @@
 > 本專案 fork 自 [darrell-tw/darrelltw-mods](https://github.com/darrell-tw/darrelltw-mods)（MIT 授權），原作者 Darrell Wang。
 > 這個版本多了：雙欄也顯示**漲跌金額（變更$）**與**成交量（量）**、台股預設走**證交所 MIS 報價**（不用帳號，延遲只有幾秒到 30 秒，Yahoo 則是 20 分鐘）、`/stock` **側欄模式**，以及兩個新 mod。
 
-這個 repo 有三個 mod，可以分開裝：
+這個 repo 有四個 mod，可以分開裝：
 
 | mod | 做什麼 |
 | --- | --- |
 | `tw-stock-mod` | 股票看板（本文第 1～6 節） |
 | `ai-news-ticker` | AI 新聞跑馬燈，見[第 7 節](#7-ai-新聞跑馬燈ai-news-ticker) |
-| `token-usage` | token 用量卡，畫在 `/stock` 側欄，見[第 8 節](#8-token-用量token-usage) |
+| `token-usage` | token 用量卡畫在 `/stock` 側欄，側欄關著時改印在狀態列，見[第 8 節](#8-token-用量token-usage) |
+| `change-card` | 改動卡：Claude 改了哪些檔、子代理有沒有卡住，畫在 `/stock` 側欄看板下方，見[第 9 節](#9-改動卡change-card) |
 
 ```
  台股 ▾  ☀ 盤中 09:00-13:30                                     [趨勢圖] [收起 30分]
@@ -54,6 +55,7 @@ claude plugin install tw-stock-mod@crhhaa-mods --scope user
 # 選用
 claude plugin install ai-news-ticker@crhhaa-mods --scope user
 claude plugin install token-usage@crhhaa-mods --scope user
+claude plugin install change-card@crhhaa-mods --scope user
 ```
 
 **③ 完全關掉 Claude Code 再重開**，輸入框上方就會出現看板。
@@ -266,14 +268,23 @@ claude plugin install token-usage@crhhaa-mods --scope user
 
 - 側欄會依高度一頁排滿自選股，不用一直翻頁
 - 開關狀態會記住，下次開 Claude Code 會自動打開側欄
-- 有裝 `ai-news-ticker`、`token-usage` 的話，它們會疊在側欄裡：
+- 有裝 `ai-news-ticker`、`token-usage`、`change-card` 的話，它們會疊在側欄裡：
 
 ```
 ┌ 股票 ──────────────────────┐
 │ AI 新聞卡（ai-news-ticker） │
 │ TOKEN USAGE（token-usage）  │
 │ 股票看板                    │
+│ 改動（change-card）         │
 └────────────────────────────┘
+```
+
+**只想在側欄看：** 在 `~/.claude/stock-band.json` 加 `"band": false`，側欄關著時輸入框上方就不畫看板，也不畫 AI 新聞；要看就打 `/stock`。
+
+```json
+{
+  "band": false
+}
 ```
 
 ---
@@ -283,7 +294,7 @@ claude plugin install token-usage@crhhaa-mods --scope user
 每 15 分鐘抓一次 Google 新聞的 AI 新聞（近 24 小時、繁中），每 20 秒換一則，可以按按鈕在瀏覽器開啟原文。
 
 - `/stock` 側欄開著：畫在側欄最上面
-- 側欄沒開：畫在輸入框上方
+- 側欄沒開：畫在輸入框上方（`~/.claude/stock-band.json` 寫 `"band": false` 就不畫，見第 6 節）
 
 不用帳號、不用設定。
 
@@ -291,7 +302,7 @@ claude plugin install token-usage@crhhaa-mods --scope user
 
 ## 8. token 用量（token-usage）
 
-在 `/stock` 側欄的看板上方畫一張用量卡，**只在側欄開著時顯示**：
+`/stock` 側欄開著時，在看板上方畫一張用量卡：
 
 ```
 TOKEN USAGE                                    13:05
@@ -309,19 +320,64 @@ TOKEN USAGE                                    13:05
 | `5h`／`7d` | 5 小時、7 天額度用了幾 %，`@` 後面是重置時間，最後是倒數 |
 | `ctx` | 這個對話的 context 用量，後面是花費（有的話） |
 
-顏色：90% 以上紅、70% 以上亮黃，其他是黃色。
+顏色：90% 以上紅、70% 以上亮黃，其他是淡紫。
+
+**側欄關著時改畫在狀態列（選用）：** mod 附一支 `statusline.mjs`，照 claude-hud 的寫法把 Context 和每個帳號的用量排成一張對齊的表：
+
+```
+Context    ■■■■■■■■■■  12%
+▶claude    ■■■■■■■■■■  18% (3h 55m / 5h)   ■■■■■■■■■■   9% (6d 17h / 7d)
+claude-b   ■■■■■■■■■■  72% (2h 25m / 5h)   ■■■■■■■■■■  30% (5d 9h / 7d)
+```
+
+長條 10 格，亮的是用掉的、深灰的是剩的。正在用的帳號（和 Context）是淡紫色，別的帳號是灰色；70% 以上黃、90% 以上紅。
+
+在你的 statusLine 腳本裡把 Claude Code 給的 stdin 轉給它（Context 從 stdin 讀；需要 Node）：
+
+```bash
+input=$(cat)
+printf '%s' "$input" | node "$(ls -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/cache/crhhaa-mods/token-usage/*/statusline.mjs | sort -V | tail -1)"
+```
+
+要「側欄開著就不畫」的話，從 statusLine 的 stdin 取 `session_id`，看 `~/.claude/stock-band/pane/<session_id>` 的內容：tw-stock-mod 在側欄開著時寫 `1`，關掉寫 `0`。狀態列平常只在有新訊息時重畫，在 statusLine 設定加 `"refreshInterval": 2` 才會在開關側欄後馬上跟上。
 
 **數字從哪來、誰看得到：**
 
 - 數字跟 Claude Code 狀態列是同一份（Claude Code 本機提供），**不打任何 API、不連網**
 - 只存在你自己電腦的 `~/.claude/token-usage/`，不會進 repo，別人裝這個 mod 只會看到**他自己的**用量
-- 唯一會「被看到」的情況是你分享螢幕或截圖時，側欄正好開著
+- 唯一會「被看到」的情況是你分享螢幕或截圖時，卡片或狀態列正好在畫面上
 
-**多個帳號：** 如果你用 `CLAUDE_CONFIG_DIR` 開第二個帳號（例如 `~/.claude-b`），兩邊各裝一份，卡片會把兩個帳號都列出來，目前這個 Claude 用的那個標橘色 `▶`。
+**多個帳號：** 如果你用 `CLAUDE_CONFIG_DIR` 開第二個帳號（例如 `~/.claude-b`），兩邊各裝一份，卡片和狀態列都會把兩個帳號列出來，目前這個 Claude 用的那個標橘色 `▶`。
 
 ---
 
-## 9. 更新與移除
+## 9. 改動卡（change-card）
+
+回答兩件事：**Claude 這個 session 改了哪些檔**（主對話和子代理都算），**派出去的子代理有沒有卡住**。在 `/stock` 側欄的看板**下方**只佔一行：
+
+```
+● 2 進行中 ⚠ 1 卡住 · [ 改動 5 檔 › ]
+  ⚠ Explore#2 同一個 Grep 重複 3 次
+```
+
+（示意圖）
+
+- 沒有子代理在跑時，只剩 `[ 改動 N 檔 › ]`；什麼都沒改、也沒有子代理時不畫
+- 卡住的子代理才會多列一行。算卡住的情況：同一個工具＋同樣參數連續 3 次、工具連續失敗 3 次、超過 3 分鐘沒有新動作（有工具正在跑時不算）
+- 按 `[ 改動 N 檔 › ]` 開一個寬的「改動」Pane：
+  - 上面是檔案清單，標出誰改的（`主對話`、`Explore#2`…）和 `+/-` 行數，按檔名切換
+  - 下面是那個檔的內容，有兩種看法：`[ 差異 ]` 只列改到的地方和前後兩行，`[ 全文 ]` 列出整份檔案、改到的行標紅綠；都有行號。內容超出時，聚焦 Pane 後可以捲動
+  - 最下面是子代理樹：誰派了誰、在做什麼、用了幾次工具、跑多久
+- diff 是「第一次改這個檔之前」對比「現在」，所以你自己後來手動改的也會算進去
+- Write／Edit／MultiEdit／NotebookEdit 直接記。**用 Bash 改的檔**（`sed -i`、`mv`、程式產生的檔…）靠每次 Bash 前後各看一次 git 工作目錄補抓，所以：只在 git repo 裡有效；Bash 之前就沒 commit 的檔，diff 會跟 HEAD 比（連你自己之前的改動一起算）；同時跑的 Bash 可能互相算到對方頭上；沒 commit 的檔超過 500 個就不補抓
+- 只記這個 session；hot reload 或 resume 會接回來
+- 不打 API、不連網、不花 token
+
+子代理的部分改自 [OneWave-AI/claude-code-mods](https://github.com/OneWave-AI/claude-code-mods) 的 `swarm`（MIT），只留派生樹，拿掉了時間軸、訊息連線和活動紀錄。
+
+---
+
+## 10. 更新與移除
 
 **更新到最新版：**
 
@@ -330,6 +386,7 @@ claude plugin marketplace update crhhaa-mods
 claude plugin update tw-stock-mod@crhhaa-mods
 claude plugin update ai-news-ticker@crhhaa-mods   # 有裝才需要
 claude plugin update token-usage@crhhaa-mods      # 有裝才需要
+claude plugin update change-card@crhhaa-mods       # 有裝才需要
 ```
 
 更新完要重開 Claude Code，看 footer 的版本號有沒有變。
@@ -340,12 +397,13 @@ claude plugin update token-usage@crhhaa-mods      # 有裝才需要
 claude plugin uninstall tw-stock-mod@crhhaa-mods --scope user
 claude plugin uninstall ai-news-ticker@crhhaa-mods --scope user
 claude plugin uninstall token-usage@crhhaa-mods --scope user
+claude plugin uninstall change-card@crhhaa-mods --scope user
 claude plugin marketplace remove crhhaa-mods
 ```
 
 ---
 
-## 10. 看不到看板？
+## 11. 看不到看板？
 
 依序檢查這四項（它們的症狀一模一樣：沒有看板，也沒有任何錯誤訊息）：
 
@@ -367,7 +425,8 @@ mods/tw-stock-mod/                股票看板本體
   scripts/dev/run-checks.sh       全部檢查，改完跑一次
   README.md                       完整技術文件（英文，原作者撰寫）
 mods/ai-news-ticker/hooks/        AI 新聞跑馬燈
-mods/token-usage/hooks/           token 用量卡
+mods/token-usage/                 token 用量：hooks/ 畫側欄卡，statusline.mjs 印狀態列
+mods/change-card/hooks/           改動卡
 ```
 
 每個 mod 的版本號都在自己的 `.claude-plugin/plugin.json`。`hooks/register.test.ts` 要在 Claude Code 的測試環境（`claude-code/testing`）裡跑，直接用 `bun test` 會找不到模組。
@@ -386,5 +445,7 @@ git merge upstream/main
 ## 致謝與授權
 
 原作者 **Darrell Wang**（[@darrell_tw_](https://x.com/darrell_tw_)／[GitHub](https://github.com/darrell-tw)），這個看板的設計與絕大部分程式碼都出自他的 [darrelltw-mods](https://github.com/darrell-tw/darrelltw-mods)。
+
+`change-card` 的子代理部分改自 [OneWave-AI/claude-code-mods](https://github.com/OneWave-AI/claude-code-mods) 的 `swarm`（MIT，原授權見 `mods/change-card/LICENSE`）。
 
 [MIT](LICENSE) 授權。
