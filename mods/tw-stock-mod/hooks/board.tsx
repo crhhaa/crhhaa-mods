@@ -102,6 +102,8 @@ export type BoardProps = {
   columns: 1 | 2
   /** single-column quote rows; the /stock pane passes its height, the band leaves it at 5 */
   quoteRows?: number
+  /** the feed prices this market but has no snapshot yet: say so instead of drawing demo prices */
+  loading?: boolean
   /** 'table' = the watchlist, 'chart' = one symbol's K bars */
   view: View
   /** which row the chart view is showing */
@@ -166,7 +168,7 @@ const FLAT = '#9aa0a6'
 const GRAY = '#808080'
 const DIM = '#6e7681'
 const HEAD = '#a6aebb'
-const SYMBOL = '#79a8ff' // the blue ticker links in the reference screenshot
+const SYMBOL = '#c9b27c' // Morandi yellow, same as token-usage's highlight
 const RULE = '#2d333b'
 const ORANGE = '#d97757'
 const WHITE = '#f0f3f6'
@@ -1082,6 +1084,17 @@ export default function StockBandBoard(props: BoardProps | undefined, surface: C
     () => new Row(),
   )
   const quotes = props.quotes.slice(0, Math.max(MAX_TABLE_QUOTES, qRows))
+  if (props.loading) {
+    rows[Math.floor(rows.length / 2)].put(2, '報價載入中…', DIM)
+    for (const r of rows) if (r.cells.length === 0) r.cells.push({ ch: '\u00a0' })
+    return (
+      <Box flexDirection="column">
+        {rows.map(r => (
+          <Text>{rowChildren(r, Text)}</Text>
+        ))}
+      </Box>
+    )
+  }
   // the feed names itself - 證交所 延遲 and Yahoo 延遲 are not the same claim -
   // and only a source that did not say falls back to a generic label
   const sourceName =

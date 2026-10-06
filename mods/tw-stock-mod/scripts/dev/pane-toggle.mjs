@@ -74,4 +74,11 @@ ok(hasClient(await band()) && store.get('paneOpen') === false, 'closing the pane
 await stock()
 await handlers.get('ui.close')($, { id: 'stock-band', origin: { kind: 'unload' } }, async () => {})
 ok(store.get('paneOpen') === true, 'a reload unload does not forget the choice')
+
+// a `top:` Box from deep in the tree beneath goes ahead of everything else
+const { liftTop } = await import(regPath)
+const news = { type: 'Box', props: { key: 'top:news' }, children: ['news'] }
+const [tops, rest] = liftTop({ type: 'Box', props: {}, children: ['tokens', { type: 'Box', props: {}, children: [news] }] })
+ok(tops[0] === news && JSON.stringify(rest) === JSON.stringify({ type: 'Box', props: {}, children: ['tokens', { type: 'Box', props: {}, children: [] }] }), 'top: blocks lift above the rest')
+ok(liftTop(null)[0].length === 0 && liftTop(null)[1] === null, 'nothing beneath draws nothing')
 done()

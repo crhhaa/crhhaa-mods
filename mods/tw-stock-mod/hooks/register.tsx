@@ -1,5 +1,5 @@
 /* @jsx h */
-import type { EngineInterface, Register, RenderInput } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, RenderInput } from 'claude-code'
 
 // tw-stock-mod: a watchlist band above the Claude Code prompt. Taiwan trading
 // hours show the Taiwan list, US trading hours show the US list, and the
@@ -2044,7 +2044,8 @@ function buildProps(
     highlight: cfg.highlight,
     sorted: sort === 'change',
     columns,
-    quoteRows: paneRows,
+    // the engine refuses a Client prop holding undefined: leave the key out
+    ...(paneRows !== undefined && { quoteRows: paneRows }),
     view,
     focus: focusIdx,
     barLabel: quotesFile?.barLabel ?? (usedFile ? 'K 棒' : 'K 棒（示範）'),
@@ -2583,6 +2584,25 @@ function dispWidth(s: string): number {
 // still fits next to the session text.
 const RIGHT_BUTTON_GROUP_COLS = 40
 
+// Other mods hooked on the /stock pane hand their blocks up through next(e)
+// and land above the board. A Box keyed `top:...` (ai-news-ticker) is pulled
+// to the very top, ahead of the rest (token-usage), whichever order the
+// engine nests the plugins in beneath this one. Trees are plain data
+// ({ type, props, children }), so this is a walk.
+// ponytail: only sorts what runs beneath this hook; a plugin wrapping it from
+// outside draws where it draws
+type Node = { type?: string; props?: { key?: unknown }; children?: Node[] } | string | null | undefined
+export function liftTop(tree: RenderChildren): [RenderChildren[], RenderChildren] {
+  const tops: Node[] = []
+  const strip = (n: Node): Node => {
+    if (!n || typeof n === 'string') return n
+    if (n.type === 'Box' && String(n.props?.key ?? '').startsWith('top:')) return void tops.push(n)
+    return n.children ? { ...n, children: n.children.map(strip).filter(c => c != null) } : n
+  }
+  const rest = strip(tree as Node)
+  return [tops as RenderChildren[], rest as RenderChildren]
+}
+
 // The board's tree, shared by the band and the /stock pane; undefined until
 // the first quotes are in. `cols` is the box it draws into.
 async function drawBoard(
@@ -2658,7 +2678,14 @@ async function drawBoard(
   // off the identical list rather than two `buildCycle(stops)` calls that
   // could observe different `stops` if this ever moved between them.
   const cycleStops = buildCycle(stops)
-  const props = buildProps(now, config, quotesFor(pickMarket(now, mode).market, now), mode, view, focusCode, cols, quoteRows)
+  const market = pickMarket(now, mode).market
+  const quotes = quotesFor(market, now)
+  // A market the feed prices but holds no good snapshot for (just loaded,
+  // or the feed is failing / backing off): the board says 報價載入中…
+  // rather than drawing demo prices that read as real ones. The button row
+  // still draws, so the market can be switched away from a failing feed.
+  const loading = !quotes && feedMarkets(config, market).includes(market)
+  const props = buildProps(now, config, quotes, mode, view, focusCode, cols, quoteRows)
   // buildProps chases focusCode to whatever position it actually landed on
   // (falling back to 0 when the code is unset, paged off, or gone from the
   // list) - syncing it back here keeps that landing code, not a stale one,
@@ -2894,8 +2921,11 @@ async function drawBoard(
   // focus+Enter.
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row" justifyContent="space-between">
-        <Box flexDirection="row">
+      {/* Too narrow for both groups on one line (the 64-column /stock pane in
+          chart view): the right group drops whole to a second line instead of
+          the engine squeezing every button until labels split mid-word. */}
+      <Box flexDirection="row" justifyContent="space-between" flexWrap="wrap">
+        <Box flexDirection="row" flexWrap="wrap">
           {switcher === 'select' ? (
             <Select
               key="stock-band:market"
@@ -2950,7 +2980,7 @@ async function drawBoard(
           {showTaipei ? <Text> </Text> : null}
           {showTaipei ? <Text color={DIM}>{props.taipeiNote}</Text> : null}
         </Box>
-        <Box flexDirection="row">
+        <Box flexDirection="row" flexShrink={0}>
           {table && props.pageCount > 1 ? (
             <Button
               key="stock-band:page"
@@ -2981,7 +3011,7 @@ async function drawBoard(
         module="./board.tsx"
         width={cols}
         height={props.view === 'chart' ? CHART_BOARD_ROWS : props.view === 'pnl' ? PNL_BOARD_ROWS : TABLE_BOARD_ROWS - 5 + (props.quoteRows ?? 5)}
-        props={{ ...props }}
+        props={{ ...props, ...(loading && { loading: true }) }}
       />
     </Box>
   )
@@ -3883,8 +3913,8 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
-    const { Text } = await $.ui.resolve(e)
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e, next) => {
+    const { Box, Text } = await $.ui.resolve(e)
     if (!paneOpen) {
       paneOpen = true // drawn now, so the band steps aside
       $.ui.invalidate('ui.render')
@@ -3894,7 +3924,15 @@ export const register: Register = on => {
     // 5 rows go to the button row (wraps to 2 this narrow) and the board's
     // header, rule and footer.
     const quoteRows = Math.min(MAX_SYMBOLS, Math.max(5, e.props.scroll.bodyRows - 5))
-    return (await drawBoard($, e, e.props.bodyColumns, quoteRows)) ?? <Text color={DIM}>報價載入中…</Text>
+    const board = (await drawBoard($, e, e.props.bodyColumns, quoteRows)) ?? <Text color={DIM}>報價載入中…</Text>
+    const [tops, rest] = liftTop(await next(e))
+    return (
+      <Box flexDirection="column">
+        {tops}
+        {rest}
+        {board}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

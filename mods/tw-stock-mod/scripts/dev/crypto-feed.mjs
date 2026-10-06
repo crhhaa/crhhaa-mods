@@ -219,6 +219,7 @@ async function boot(responses) {
 
   ok(calls.length === 1, '(2) the failing request still only fires once')
   ok(props?.source === 'demo', `(2) result:false published nothing live - board stayed on demo prices (source=${props?.source})`)
+  ok(props?.loading === true, '(2) ...and says 報價載入中 instead of showing those demo prices')
   ok(
     logs.some(l => l.includes('result:false')),
     '(2) the failure is logged rather than silently swallowed',

@@ -12,6 +12,18 @@
       "source": "./mods/tw-stock-mod",
       "category": "productivity",
       "description": "台股／美股看板：紅漲綠跌（台股）／綠漲紅跌（美股），券商風格表格，還有一個損益模式看你的庫存。報價預設走 Yahoo，免金鑰；永豐 Shioaji（macOS／Linux）與群益 Capital（Windows）是可選的即時路線，照個人偏好順序（`~/.claude/stock-band.json`）嘗試。零模型 token。"
+    },
+    {
+      "name": "ai-news-ticker",
+      "source": "./mods/ai-news-ticker",
+      "category": "productivity",
+      "description": "AI 新聞跑馬燈：輸入框下方的狀態列輪播 Google 新聞的 AI 標題。零模型 token。"
+    },
+    {
+      "name": "token-usage",
+      "source": "./mods/token-usage",
+      "category": "productivity",
+      "description": "token 用量：Context、5h／7d 額度、花費，畫在 /stock 側欄的看板上方。零模型 token。"
     }
   ]
 }
