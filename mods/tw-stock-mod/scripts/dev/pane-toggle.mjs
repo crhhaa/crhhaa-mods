@@ -80,5 +80,9 @@ const { liftTop } = await import(regPath)
 const news = { type: 'Box', props: { key: 'top:news' }, children: ['news'] }
 const [tops, rest] = liftTop({ type: 'Box', props: {}, children: ['tokens', { type: 'Box', props: {}, children: [news] }] })
 ok(tops[0] === news && JSON.stringify(rest) === JSON.stringify({ type: 'Box', props: {}, children: ['tokens', { type: 'Box', props: {}, children: [] }] }), 'top: blocks lift above the rest')
-ok(liftTop(null)[0].length === 0 && liftTop(null)[1] === null, 'nothing beneath draws nothing')
+// a `bottom:` Box goes below the board and its height comes off the board's rows
+const swarm = { type: 'Box', props: { key: 'bottom:swarm', height: 7 }, children: ['swarm'] }
+const [, rest2, bottoms, reserved] = liftTop({ type: 'Box', props: {}, children: [news, swarm] })
+ok(bottoms[0] === swarm && reserved === 7 && rest2.children.length === 0, 'bottom: blocks drop below and reserve their height')
+ok(liftTop(null)[0].length === 0 && liftTop(null)[1] === null && liftTop(null)[3] === 0, 'nothing beneath draws nothing')
 done()

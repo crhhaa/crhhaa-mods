@@ -2592,20 +2592,29 @@ const RIGHT_BUTTON_GROUP_COLS = 40
 // Other mods hooked on the /stock pane hand their blocks up through next(e)
 // and land above the board. A Box keyed `top:...` (ai-news-ticker) is pulled
 // to the very top, ahead of the rest (token-usage), whichever order the
-// engine nests the plugins in beneath this one. Trees are plain data
+// engine nests the plugins in beneath this one. A Box keyed `bottom:...`
+// (swarm-card) goes below the board, and its `height` is taken off the
+// board's rows so it stays on screen. Trees are plain data
 // ({ type, props, children }), so this is a walk.
 // ponytail: only sorts what runs beneath this hook; a plugin wrapping it from
 // outside draws where it draws
-type Node = { type?: string; props?: { key?: unknown }; children?: Node[] } | string | null | undefined
-export function liftTop(tree: RenderChildren): [RenderChildren[], RenderChildren] {
+type Node = { type?: string; props?: { key?: unknown; height?: unknown }; children?: Node[] } | string | null | undefined
+export function liftTop(tree: RenderChildren): [RenderChildren[], RenderChildren, RenderChildren[], number] {
   const tops: Node[] = []
+  const bottoms: Node[] = []
+  let reserved = 0
   const strip = (n: Node): Node => {
     if (!n || typeof n === 'string') return n
-    if (n.type === 'Box' && String(n.props?.key ?? '').startsWith('top:')) return void tops.push(n)
+    const key = n.type === 'Box' ? String(n.props?.key ?? '') : ''
+    if (key.startsWith('top:')) return void tops.push(n)
+    if (key.startsWith('bottom:')) {
+      reserved += Number(n.props?.height) || 0
+      return void bottoms.push(n)
+    }
     return n.children ? { ...n, children: n.children.map(strip).filter(c => c != null) } : n
   }
   const rest = strip(tree as Node)
-  return [tops as RenderChildren[], rest as RenderChildren]
+  return [tops as RenderChildren[], rest as RenderChildren, bottoms as RenderChildren[], reserved]
 }
 
 // The board's tree, shared by the band and the /stock pane; undefined until
@@ -3927,15 +3936,16 @@ export const register: Register = on => {
     if (e.surface !== 'terminal') return <Text>股票看板只在終端機顯示</Text>
     // the pane is tall: fill it with quotes instead of 5 and a lot of air.
     // 5 rows go to the button row (wraps to 2 this narrow) and the board's
-    // header, rule and footer.
-    const quoteRows = Math.min(MAX_SYMBOLS, Math.max(5, e.props.scroll.bodyRows - 5))
+    // header, rule and footer; `bottom:` cards below the board take theirs too.
+    const [tops, rest, bottoms, reserved] = liftTop(await next(e))
+    const quoteRows = Math.min(MAX_SYMBOLS, Math.max(5, e.props.scroll.bodyRows - 5 - reserved))
     const board = (await drawBoard($, e, e.props.bodyColumns, quoteRows)) ?? <Text color={DIM}>報價載入中…</Text>
-    const [tops, rest] = liftTop(await next(e))
     return (
       <Box flexDirection="column">
         {tops}
         {rest}
         {board}
+        {bottoms}
       </Box>
     )
   })
